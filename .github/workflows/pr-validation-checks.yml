@@ -5,17 +5,19 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
-
   pr_title_lint:
-    name: 🏷️ PR Title Lint (Conventional Commit)
+    name: 🏷️ PR Title Regex Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 
-      
-      - name: Check PR Title
-        uses: wagoid/commitlint-github-action@v6
-        with:
-          titleOnly: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: 🔍 Validate PR Title with Regex
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR Title: $PR_TITLE"
+          if [[ ! "$PR_TITLE" =~ ^(feat|fix|docs|chore|refactor|test|build|ci)(\(.+\))?:\  ]]; then
+            echo "❌ Invalid PR title format."
+            echo "✅ Expected format: <type>(optional scope): <description>"
+            echo "   e.g. feat(core): add new caching layer"
+            exit 1
+          fi
+          echo "✅ PR title is valid!"
