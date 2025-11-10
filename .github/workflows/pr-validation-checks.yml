@@ -6,8 +6,8 @@ on:
 
 jobs:
 
-  commit_lint:
-    name: 🏷️ PR Title Message Lint
+  pr_title_lint:
+    name: 🏷️ PR Title Lint (Conventional Commit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,4 +17,5 @@ jobs:
       - name: Check PR Title
         uses: wagoid/commitlint-github-action@v6
         with:
+          titleOnly: true
           token: ${{ secrets.GITHUB_TOKEN }}

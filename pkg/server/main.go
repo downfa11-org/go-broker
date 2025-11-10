@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -19,10 +20,16 @@ import (
 	"github.com/downfa11-org/go-broker/util"
 )
 
-const maxWorkers = 1000
+const (
+	maxWorkers      = 1000
+	readDeadline    = 5 * time.Minute // Read deadline defined as a constant
+	HealthCheckPort = 9080            // Port for health check endpoint
+)
 
 // RunServer starts the broker with optional TLS and gzip
 func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager) error {
+	startHealthCheckServer(HealthCheckPort)
+
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		log.Printf("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -72,7 +79,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 	ctx := controller.NewClientContext("tcp-group", 0)
 
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Minute)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
 			log.Printf("⚠️ SetReadDeadline error: %v", err)
 			return
 		}
@@ -145,4 +152,22 @@ func writeResponse(conn net.Conn, msg string) {
 		log.Printf("⚠️ Write response error: %v", err)
 		return
 	}
+}
+
+// startHealthCheckServer starts a simple HTTP server for health checks
+func startHealthCheckServer(port int) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	addr := fmt.Sprintf(":%d", port)
+
+	go func() {
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Printf("❌ Health check server failed: %v", err)
+		}
+	}()
+	log.Printf("🩺 Health check endpoint /health started on port %d", port)
 }
