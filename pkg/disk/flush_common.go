@@ -79,6 +79,13 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		data := []byte(msg)
 		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
 
+		totalLen := 4 + len(data)
+		if d.CurrentOffset+totalLen > d.SegmentSize {
+			if err := d.rotateSegment(); err != nil {
+				log.Printf("ERROR: rotateSegment failed to rotate segment: %v", err)
+			}
+		}
+
 		if _, err := d.writer.Write(lenBuf[:]); err != nil {
 			log.Printf("ERROR: writeBatch failed writing. length: %v", err)
 			break
@@ -88,13 +95,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 			break
 		}
 
-		d.CurrentOffset += 4 + len(data)
-
-		if d.CurrentOffset >= d.SegmentSize {
-			if err := d.rotateSegment(); err != nil {
-				log.Printf("ERROR: rotateSegment failed to rotate segment: %v", err)
-			}
-		}
+		d.CurrentOffset += totalLen
 	}
 
 	if err := d.writer.Flush(); err != nil {
