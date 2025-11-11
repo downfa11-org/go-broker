@@ -21,10 +21,14 @@ func TestDiskHandlerBasic(t *testing.T) {
 		DiskWriteTimeoutMS: 100,
 		LogDir:             dir,
 	}
-	baseName := filepath.Join(dir, "testlog")
+
+	topic := "testlog"
 	segmentSize := 1024
 
-	dh, _ := disk.NewDiskHandler(cfg, "testlog", 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	if err != nil {
+		t.Fatalf("NewDiskHandler: %v", err)
+	}
 	defer dh.Close()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
@@ -34,7 +38,11 @@ func TestDiskHandlerBasic(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	files, _ := filepath.Glob(baseName + "_*.log")
+	pattern := filepath.Join(cfg.LogDir, topic, "partition_0_segment_*.log")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob %s: %v", pattern, err)
+	}
 	if len(files) == 0 {
 		t.Fatalf("Expected at least 1 segment file, got %d", len(files))
 	}
@@ -56,15 +64,19 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
 		DiskFlushBatchSize: 2,
-		LingerMS:           10,
-		ChannelBufferSize:  1,
+		LingerMS:           50,
+		ChannelBufferSize:  2,
 		DiskWriteTimeoutMS: 100,
 		LogDir:             dir,
 	}
-	baseName := filepath.Join(dir, "overflowlog")
+
+	topic := "overflowlog"
 	segmentSize := 1024
 
-	dh, _ := disk.NewDiskHandler(cfg, "overflowlog", 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	if err != nil {
+		t.Fatalf("NewDiskHandler: %v", err)
+	}
 	defer dh.Close()
 
 	dh.AppendMessage("first")
@@ -72,7 +84,11 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	files, _ := filepath.Glob(baseName + "_*.log")
+	pattern := filepath.Join(cfg.LogDir, topic, "partition_0_segment_*.log")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob %s: %v", pattern, err)
+	}
 	if len(files) == 0 {
 		t.Fatalf("Expected segment file to be created")
 	}
@@ -93,10 +109,14 @@ func TestDiskHandlerRotation(t *testing.T) {
 		DiskWriteTimeoutMS: 100,
 		LogDir:             dir,
 	}
-	baseName := filepath.Join(dir, "rotationlog")
+
+	topic := "rotationlog"
 	segmentSize := 10
 
-	dh, _ := disk.NewDiskHandler(cfg, "rotationlog", 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	if err != nil {
+		t.Fatalf("NewDiskHandler: %v", err)
+	}
 	defer dh.Close()
 
 	msgs := []string{"12345", "67890", "abcde"}
@@ -106,7 +126,11 @@ func TestDiskHandlerRotation(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	files, _ := filepath.Glob(baseName + "_*.log")
+	pattern := filepath.Join(cfg.LogDir, topic, "partition_0_segment_*.log")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob %s: %v", pattern, err)
+	}
 	if len(files) < 2 {
 		t.Errorf("Expected multiple segment files, got %d", len(files))
 	}
