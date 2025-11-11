@@ -95,7 +95,10 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		}
 	}
 
-	d.writer.Flush()
+	if err := d.writer.Flush(); err != nil {
+		log.Printf("ERROR: flush failed after batch: %v", err)
+		return
+	}
 	if d.file != nil {
 		if err := d.file.Sync(); err != nil {
 			log.Printf("ERROR: sync failed after batch: %v", err)
