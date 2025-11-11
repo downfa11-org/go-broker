@@ -83,6 +83,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		if d.CurrentOffset+totalLen > d.SegmentSize {
 			if err := d.rotateSegment(); err != nil {
 				log.Printf("ERROR: rotateSegment failed to rotate segment: %v", err)
+				break
 			}
 		}
 
