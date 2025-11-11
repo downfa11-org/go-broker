@@ -11,6 +11,7 @@ func Hash(key string) int {
 	return int(h.Sum32() & hashMask)
 }
 
+// GenerateID returns a 64-bit FNV-1a hash of the given payload string.
 func GenerateID(payload string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(payload))
