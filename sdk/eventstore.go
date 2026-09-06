@@ -299,7 +299,7 @@ func (es *EventStore) readStreamPage(key string, fromVersion uint64, limit int, 
 		cmd += fmt.Sprintf(" lifecycle_epoch=%d", lifecycleEpoch)
 	}
 
-	conn, err := es.getConn()
+	conn, envData, err := es.readStreamEnvelope(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -310,23 +310,6 @@ func (es *EventStore) readStreamPage(key string, fromVersion uint64, limit int, 
 			_ = conn.SetDeadline(time.Time{})
 		}
 	}()
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return nil, err
-	}
-
-	data := []byte(cmd)
-	if err := WriteWithLength(conn, data); err != nil {
-		es.resetConn()
-		return nil, fmt.Errorf("write: %w", err)
-	}
-
-	// Frame 1: JSON envelope
-	envData, err := ReadWithLength(conn)
-	if err != nil {
-		es.resetConn()
-		return nil, fmt.Errorf("read envelope: %w", err)
-	}
-
 	var envelope struct {
 		Status         string    `json:"status"`
 		Error          string    `json:"error"`
@@ -419,6 +402,41 @@ func (es *EventStore) readStreamPage(key string, fromVersion uint64, limit int, 
 	}
 
 	return result, nil
+}
+
+func (es *EventStore) readStreamEnvelope(cmd string) (net.Conn, []byte, error) {
+	for redirects := 0; ; redirects++ {
+		conn, err := es.getConn()
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			es.resetConn()
+			return nil, nil, err
+		}
+		if err := WriteWithLength(conn, []byte(cmd)); err != nil {
+			es.resetConn()
+			return nil, nil, fmt.Errorf("write: %w", err)
+		}
+		data, err := ReadWithLength(conn)
+		if err == nil {
+			return conn, data, nil
+		}
+		es.resetConn()
+		var brokerErr *BrokerError
+		if redirects >= 3 || !errors.As(err, &brokerErr) || brokerErr.Code != "NOT_LEADER" || brokerErr.Class != ErrorClassRouting {
+			return nil, nil, fmt.Errorf("read envelope: %w", err)
+		}
+		leader := brokerErr.Fields["leader"]
+		host, port, addressErr := net.SplitHostPort(leader)
+		portNumber, portErr := strconv.Atoi(port)
+		if addressErr != nil || host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return nil, nil, fmt.Errorf("invalid stream leader address %q: %w", leader, err)
+		}
+		es.mu.Lock()
+		es.addr = leader
+		es.mu.Unlock()
+	}
 }
 
 // SaveSnapshot saves a snapshot for an aggregate at the given version.
