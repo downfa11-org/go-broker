@@ -1,0 +1,34 @@
+{{- if eq .Values.mode "cluster" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cursus.fullname" . }}-headless
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "cursus.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: broker
+      port: {{ .Values.service.port }}
+      targetPort: broker
+    - name: raft
+      port: {{ .Values.cluster.raftPort }}
+      targetPort: raft
+    - name: discovery
+      port: {{ .Values.cluster.discoveryPort }}
+      targetPort: discovery
+    - name: internal
+      port: {{ .Values.cluster.internalPort }}
+      targetPort: internal
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cursus.fullname" . }}
+spec:
+  minAvailable: {{ add1 (div (int .Values.replicaCount) 2) }}
+  selector:
+    matchLabels:
+      {{- include "cursus.selectorLabels" . | nindent 6 }}
+{{- end }}

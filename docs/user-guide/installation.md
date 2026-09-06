@@ -81,21 +81,46 @@ Build locally:
 docker build -t cursus:local .
 ```
 
-The multi-stage Dockerfile builds `/root/broker` and `/root/cli` with Go 1.25.0 on Alpine 3.20. `entrypoint.sh` executes the broker with `-config ./config.yaml`; if no file is mounted, the broker uses defaults after warning. Production deployments should mount a configuration and durable log volume explicitly.
+The multi-stage Dockerfile builds `/app/broker`, `/app/cli`, `/app/cursusctl` and `/app/cursus-storage`, then runs the broker as UID 1000. `entrypoint.sh` executes `/app/broker` with the supplied arguments. A missing explicitly configured file is an error. Production deployments should mount a configuration and durable log volume explicitly.
 
 Example configuration mount:
 
 ```bash
 docker run --rm \
   -p 9000:9000 -p 9080:9080 -p 9100:9100 \
-  -v "$PWD/config.yaml:/root/config.yaml:ro" \
-  -v cursus-data:/root/broker-logs \
+  -e CONFIG_PATH=/app/config.yaml \
+  -e LOG_DIR=/data/logs \
+  -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  -v cursus-data:/data/logs \
   ghcr.io/cursus-io/cursus:latest
 ```
 
 ## Helm
 
 A Helm chart is available under `manifests/helm`. Review `values.yaml`, persistent volume settings, TLS/internal mTLS secrets, advertised addresses, replica/quorum values, and resource limits before installing. Do not treat chart defaults as a production security profile.
+
+`mode=standalone` runs exactly one Deployment with `Recreate` and one PVC. `mode=cluster` requires 3 or 5 StatefulSet replicas on separate Kubernetes nodes, a PVC per broker, and internal mTLS/token Secrets. The headless Service publishes not-ready addresses so quorum bootstrap does not wait for readiness. The chart advertises Pod DNS names and supports in-cluster clients only. StatefulSet updates use `OnDelete`: update the image/config, restart one broker, verify full ISR and zero under-replicated partitions, then proceed to the next broker. A PDB protects voluntary disruption, not forced deletion, node loss or data loss.
+
+Use a new release for a new cluster. Do not toggle an existing standalone release into cluster mode, resize the voter set by changing `replicaCount`, rename a cluster release/namespace/domain, or attach an old standalone PVC to a cluster Pod. These require an explicit data/membership migration. Preserve the broker DNS identities when restoring all cluster volumes. Bootstrap only an empty new cluster or restart its original retained state; do not bootstrap replacements from a partial backup.
+
+Before enabling `production=true`, prepare these Secrets in the release namespace:
+
+- Client TLS: `tls.secretName`, type `kubernetes.io/tls`, keys `tls.crt` and `tls.key`. Certificates must cover the bootstrap Service and advertised Pod DNS names for cluster clients.
+- Client authentication: `authentication.secretName`, key `users.json`, a JSON array of `{ "principal": "...", "token": "...", "permissions": [...] }` objects. Assign least-privilege broker permissions; do not commit credentials in values or ConfigMaps.
+- Cluster token: `cluster.internalSecretName`, key `token`, a strong shared token.
+- Internal mTLS: `cluster.internalTLSSecretName`, keys `tls.crt`, `tls.key`, `ca.crt`. Certificates need client/server usage and Pod DNS SANs (for example `*.cursus-headless.brokers.svc.cluster.local`). Never use the insecure cluster transport override in production.
+
+Enable persistence, client TLS, authentication, monitoring and NetworkPolicy for the production guard. Set `mode=cluster`, `replicaCount=3` and the two internal Secret names for clustering. Pin `image.tag` to a tested image built from the same version as this chart; existing released images do not acquire these changes by changing chart values alone. Helm references Secrets without creating or embedding their contents. Rotate Secrets and restart brokers one at a time; Secret-backed environment variables do not hot reload.
+
+NetworkPolicy allows client Pods in the same namespace selected by `networkPolicy.clientPodSelector` (default `cursus-client=true`), monitoring Pods selected by the configured namespace/Pod labels, and same-release internal broker traffic. Label/select the real clients and Prometheus Pods before enabling it, and verify that the CNI enforces policy. Egress is not restricted by this chart. Public load-balancer access and cross-namespace clients require a separately reviewed networking/address configuration.
+
+The default resource requests/limits are a starting point, not a capacity guarantee. Size memory for active frames, queues, transaction state and the entire in-memory event index. Event history is retained indefinitely; alert on PVC free space and validate expansion/backup procedures. The startup probe allows ten minutes by default; increase it based on measured recovery time for the largest retained active segment. Keep graceful shutdown at least 60 seconds and measure actual flush time before deployment.
+
+`monitoring.enabled=true` exposes metrics and, by default, a ServiceMonitor. Without Prometheus Operator CRDs set `monitoring.serviceMonitor.enabled=false` and configure scraping yourself. `monitoring.rules.enabled=true` additionally creates readiness, scrape-failure and under-replication PrometheusRules; ensure your Prometheus selectors discover them and test alert delivery. PVC-capacity and absent-target discovery alerts remain environment-specific responsibilities.
+
+For a recoverable backup, pause writers, confirm acknowledged operations and offsets, stop brokers gracefully, and snapshot the complete persistence unit. Standalone requires its entire log directory; cluster recovery requires all broker PVCs and their original identities, including Raft state, logs, manifests, HWM/producer checkpoints, transaction decisions and event snapshots. Keep backups immutable and restore into an isolated environment before trusting them. File-by-file live copies are not a consistent backup. No backup deletion or production restore is automated by this chart.
+
+Validate the rendered resources with `go test ./test/helm` and run the deployment CI before promotion. The manual Deployment Validation workflow can repeat recovery drills 1–5 times. These drills recreate test clusters and are not a continuous production-load soak. Kubernetes installation, certificate/CNI behavior, full-volume restore, sustained workload and latency/memory budgets must still be verified on the deployment's real storage/network before declaring it production-ready.
 
 ## Verify
 

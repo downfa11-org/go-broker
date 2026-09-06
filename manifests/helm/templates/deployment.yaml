@@ -1,6 +1,4 @@
-{{- if ne (int .Values.replicaCount) 1 }}
-{{- fail "the Deployment chart supports exactly one standalone replica; use an explicit distributed StatefulSet topology for clustering" }}
-{{- end }}
+{{- include "cursus.validate" . }}
 {{- if .Values.tls.enabled }}
 {{- if ne .Values.tls.certPath "/app/tls/cert.pem" }}
 {{- fail "tls.certPath must be /app/tls/cert.pem because the TLS Secret is mounted at /app/tls" }}
@@ -10,15 +8,33 @@
 {{- end }}
 {{- end }}
 apiVersion: apps/v1  
-kind: Deployment  
+kind: {{ if eq .Values.mode "cluster" }}StatefulSet{{ else }}Deployment{{ end }}
 metadata:  
   name: {{ include "cursus.fullname" . }}  
   labels:  
     {{- include "cursus.labels" . | nindent 4 }}  
 spec:  
   replicas: {{ .Values.replicaCount }}  
+  {{- if eq .Values.mode "cluster" }}
+  serviceName: {{ include "cursus.fullname" . }}-headless
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
+  volumeClaimTemplates:
+    - metadata:
+        name: logs
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.logDir.size }}
+  {{- else }}
   strategy:
     type: Recreate
+  {{- end }}
   selector:  
     matchLabels:  
       {{- include "cursus.selectorLabels" . | nindent 6 }}  
@@ -29,6 +45,7 @@ spec:
       annotations:  
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}  
     spec:  
+      automountServiceAccountToken: false
       serviceAccountName: {{ include "cursus.serviceAccountName" . }}  
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:  
@@ -49,6 +66,14 @@ spec:
             - name: metrics  
               containerPort: {{ .Values.service.metricsPort }}  
               protocol: TCP  
+            {{- if eq .Values.mode "cluster" }}
+            - name: raft
+              containerPort: {{ .Values.cluster.raftPort }}
+            - name: discovery
+              containerPort: {{ .Values.cluster.discoveryPort }}
+            - name: internal
+              containerPort: {{ .Values.cluster.internalPort }}
+            {{- end }}
           env:  
             - name: CONFIG_PATH  
               value: {{ .Values.persistence.config.path }}  
@@ -62,6 +87,30 @@ spec:
               value: {{ .Values.logLevel | quote }}  
             - name: LOG_DIR  
               value: {{ .Values.persistence.logDir.path }}  
+            {{- if .Values.authentication.enabled }}
+            - name: ENABLE_SASL
+              value: "true"
+            - name: SASL_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.authentication.secretName }}
+                  key: users.json
+            {{- end }}
+            {{- if eq .Values.mode "cluster" }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ADVERTISED_HOST
+              value: "$(POD_NAME).{{ include "cursus.fullname" . }}-headless.{{ .Release.Namespace }}.svc.{{ .Values.cluster.domain }}"
+            - name: ADVERTISED_CLIENT_HOST
+              value: "$(ADVERTISED_HOST)"
+            - name: INTERNAL_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cluster.internalSecretName }}
+                  key: token
+            {{- end }}
             {{- if .Values.tls.enabled }}  
             - name: USE_TLS
               value: "true"
@@ -105,9 +154,15 @@ spec:
               mountPath: /app/tls
               readOnly: true  
             {{- end }}  
+            {{- if eq .Values.mode "cluster" }}
+            - name: internal-tls
+              mountPath: /app/internal-tls
+              readOnly: true
+            {{- end }}
           resources:  
             {{- toYaml .Values.resources | nindent 12 }}  
       volumes:  
+        {{- if ne .Values.mode "cluster" }}
         - name: logs  
           {{- if .Values.persistence.enabled }}  
           persistentVolumeClaim:  
@@ -115,6 +170,7 @@ spec:
           {{- else }}  
           emptyDir: {}  
           {{- end }}  
+        {{- end }}
         - name: config  
           configMap:  
             name: {{ include "cursus.fullname" . }}-config  
@@ -128,14 +184,29 @@ spec:
               - key: tls.key  
                 path: key.pem  
         {{- end }}  
+        {{- if eq .Values.mode "cluster" }}
+        - name: internal-tls
+          secret:
+            secretName: {{ .Values.cluster.internalTLSSecretName }}
+        {{- end }}
       {{- with .Values.nodeSelector }}  
       nodeSelector:  
         {{- toYaml . | nindent 8 }}  
       {{- end }}  
-      {{- with .Values.affinity }}  
+      {{- if eq .Values.mode "cluster" }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "cursus.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      {{- else }}
+      {{- with .Values.affinity }}
       affinity:  
         {{- toYaml . | nindent 8 }}  
       {{- end }}  
+      {{- end }}
       {{- with .Values.tolerations }}  
       tolerations:  
         {{- toYaml . | nindent 8 }}  

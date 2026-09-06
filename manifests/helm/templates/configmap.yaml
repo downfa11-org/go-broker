@@ -6,6 +6,28 @@ data:
   config.yaml: |
     log_level: {{ .Values.logLevel | default "info" }}
     log_dir: {{ .Values.persistence.logDir.path }} 
+    enable_exporter: {{ .Values.monitoring.enabled }}
+    max_client_connections: {{ .Values.limits.maxClientConnections }}
+    max_stream_connections: {{ .Values.limits.maxStreamConnections }}
+    client_idle_timeout_ms: {{ .Values.limits.clientIdleTimeoutMS }}
+    enabled_distribution: {{ eq .Values.mode "cluster" }}
+    {{- if eq .Values.mode "cluster" }}
+    bootstrap_cluster: true
+    internal_use_tls: true
+    internal_tls_cert_path: /app/internal-tls/tls.crt
+    internal_tls_key_path: /app/internal-tls/tls.key
+    internal_tls_ca_path: /app/internal-tls/ca.crt
+    internal_broker_port: {{ .Values.cluster.internalPort }}
+    raft_port: {{ .Values.cluster.raftPort }}
+    discovery_port: {{ .Values.cluster.discoveryPort }}
+    min_insync_replicas: {{ .Values.cluster.minInSyncReplicas }}
+    default_replication_factor: {{ .Values.replicaCount }}
+    static_cluster_members:
+      {{- range $i := until (int .Values.replicaCount) }}
+      {{- $host := printf "%s-%d.%s-headless.%s.svc.%s" (include "cursus.fullname" $) $i (include "cursus.fullname" $) $.Release.Namespace $.Values.cluster.domain }}
+      - {{ printf "%s-%d@%s:%d" $host (int $.Values.service.port) $host (int $.Values.cluster.raftPort) | quote }}
+      {{- end }}
+    {{- end }}
 
     disk_flush_batch_size: {{ .Values.performance.custom.diskFlushBatchSize | default (index .Values.performance .Values.performanceProfile "diskFlushBatchSize") }}  
     linger_ms: {{ .Values.performance.custom.lingerMS | default (index .Values.performance .Values.performanceProfile "lingerMS") }}  

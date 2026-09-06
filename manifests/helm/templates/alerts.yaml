@@ -1,0 +1,33 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.rules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "cursus.fullname" . }}
+  labels:
+    {{- include "cursus.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: cursus.readiness
+      rules:
+        - alert: CursusBrokerNotReady
+          expr: cursus_broker_ready{namespace="{{ .Release.Namespace }}",service="{{ include "cursus.fullname" . }}-monitoring"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Cursus broker is not ready
+        - alert: CursusUnderReplicated
+          expr: cursus_cluster_under_replicated_partitions{namespace="{{ .Release.Namespace }}",service="{{ include "cursus.fullname" . }}-monitoring"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Cursus partitions have fewer in-sync replicas than configured
+        - alert: CursusMetricsUnavailable
+          expr: up{namespace="{{ .Release.Namespace }}",service="{{ include "cursus.fullname" . }}-monitoring"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Cursus metrics endpoint cannot be scraped
+{{- end }}

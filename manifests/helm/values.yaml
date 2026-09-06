@@ -1,4 +1,31 @@
 replicaCount: 1
+mode: standalone
+production: false
+networkPolicy:
+  enabled: false
+  clientPodSelector:
+    cursus-client: "true"
+  monitoringNamespaceSelector: {}
+  monitoringPodSelector:
+    cursus-monitoring: "true"
+
+cluster:
+  domain: cluster.local
+  raftPort: 9001
+  discoveryPort: 8000
+  internalPort: 19000
+  internalSecretName: ""
+  internalTLSSecretName: ""
+  minInSyncReplicas: 2
+
+authentication:
+  enabled: false
+  secretName: ""
+
+limits:
+  maxClientConnections: 128
+  maxStreamConnections: 128
+  clientIdleTimeoutMS: 60000
 
 image:
   repository: ghcr.io/cursus-io/cursus
@@ -30,10 +57,15 @@ tls:
 podSecurityContext:
   fsGroup: 1000
   supplementalGroups: [1000]
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   runAsNonRoot: true
   runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
 
 serviceAccount:
   create: true
@@ -46,17 +78,26 @@ broker:
 
 nodeSelector: {}
 affinity: {}
-resources: {}
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
 tolerations: []
 terminationGracePeriodSeconds: 60
-startupProbeFailureThreshold: 30
+startupProbeFailureThreshold: 300
 
 
 monitoring:
   enabled: false
   serviceMonitor:
+    enabled: true
     interval: 30s
     scrapeTimeout: 10s
+  rules:
+    enabled: false
 
 performanceProfile: balanced  
   
