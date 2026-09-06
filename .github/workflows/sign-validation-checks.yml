@@ -2,8 +2,6 @@ name: DCO Check
 
 on:
   pull_request:
-    branches:
-      - main
 
 jobs:
   validate-dco:
@@ -15,8 +13,10 @@ jobs:
           fetch-depth: 0
 
       - name: Validate DCO (Signed-off-by)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          COMMITS=$(git rev-list --no-merges origin/main..HEAD)
+          COMMITS=$(git rev-list --no-merges "$BASE_SHA"..HEAD)
           EXIT_CODE=0
 
           for sha in $COMMITS; do

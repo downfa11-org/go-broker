@@ -21,7 +21,8 @@ import (
 const (
 	TopicLifecycleProtocolVersion        = 1
 	DistributedCompactionProtocolVersion = 2
-	BrokerProtocolVersionCurrent         = DistributedCompactionProtocolVersion
+	PreparedTransactionProtocolVersion   = 3
+	BrokerProtocolVersionCurrent         = PreparedTransactionProtocolVersion
 )
 
 type ReplicationEntry struct {
@@ -218,6 +219,8 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		res = f.applyBatchOffsetSyncCommand(strings.TrimPrefix(data, "BATCH_OFFSET:"))
 	case strings.HasPrefix(data, "TXN_SYNC:"):
 		res = f.applyTransactionSyncCommand(strings.TrimPrefix(data, "TXN_SYNC:"))
+	case strings.HasPrefix(data, "TXN_OFFSETS:"):
+		res = f.applyPreparedTransactionOffsetsCommand(strings.TrimPrefix(data, "TXN_OFFSETS:"))
 	default:
 		res = f.handleUnknownCommand(data)
 	}

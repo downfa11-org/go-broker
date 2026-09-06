@@ -2,7 +2,6 @@ name: Deployment Validation
 
 on:
   pull_request:
-    branches: [main, release-*]
     paths:
       - '.github/workflows/deployment-validation.yml'
       - 'Dockerfile'

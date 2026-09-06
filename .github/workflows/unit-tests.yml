@@ -19,7 +19,6 @@ on:
       - 'util/**'
       - 'codecov.yml'
   pull_request:
-    branches: [main, release-*]
     paths:
       - '.github/workflows/**'
       - '.github/actions/**'
