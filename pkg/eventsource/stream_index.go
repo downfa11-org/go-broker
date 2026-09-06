@@ -37,7 +37,8 @@ type streamState struct {
 // a hash collision, after a restart, entries for colliding keys may appear under all keys
 // that share the same hash. This is a known imprecision with negligible probability.
 type StreamIndex struct {
-	mu sync.RWMutex
+	mu          sync.RWMutex
+	recoveryErr error
 
 	dir         string
 	partitionID int
@@ -53,6 +54,12 @@ type StreamIndex struct {
 
 	// Track which keys have been written to the sidecar.
 	knownKeys map[string]bool
+}
+
+func (si *StreamIndex) recoveryError() error {
+	si.mu.RLock()
+	defer si.mu.RUnlock()
+	return si.recoveryErr
 }
 
 // NewStreamIndex opens or creates the index and sidecar files for the given partition,
@@ -181,6 +188,9 @@ func (si *StreamIndex) loadFromDisk() error {
 func (si *StreamIndex) CheckAndAppend(key string, expectedVersion, offset, position uint64) (bool, uint64, error) {
 	si.mu.Lock()
 	defer si.mu.Unlock()
+	if si.recoveryErr != nil {
+		return false, 0, si.recoveryErr
+	}
 
 	current := uint64(0)
 	if st, ok := si.states[key]; ok {
@@ -203,6 +213,9 @@ func (si *StreamIndex) CheckAndAppend(key string, expectedVersion, offset, posit
 func (si *StreamIndex) CheckEnqueueAndAppend(key string, expectedVersion uint64, enqueueFn func() (uint64, error)) (bool, uint64, error) {
 	si.mu.Lock()
 	defer si.mu.Unlock()
+	if si.recoveryErr != nil {
+		return false, 0, si.recoveryErr
+	}
 
 	current := uint64(0)
 	if st, ok := si.states[key]; ok {
@@ -320,6 +333,9 @@ func (si *StreamIndex) GetVersion(key string) uint64 {
 func (si *StreamIndex) Lookup(key string, fromVersion uint64) ([]StreamIndexEntry, error) {
 	si.mu.RLock()
 	defer si.mu.RUnlock()
+	if si.recoveryErr != nil {
+		return nil, si.recoveryErr
+	}
 
 	entries, ok := si.entries[key]
 	if !ok {
@@ -339,7 +355,10 @@ func (si *StreamIndex) Lookup(key string, fromVersion uint64) ([]StreamIndexEntr
 func (si *StreamIndex) Reset() error {
 	si.mu.Lock()
 	defer si.mu.Unlock()
+	return si.resetLocked()
+}
 
+func (si *StreamIndex) resetLocked() error {
 	if err := si.indexFile.Truncate(0); err != nil {
 		return fmt.Errorf("truncate index file: %w", err)
 	}

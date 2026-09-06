@@ -60,6 +60,11 @@ func (d Definition) Normalize() (Definition, error) {
 	if err != nil {
 		return d, err
 	}
+	if d.EventSourcing && d.Name != config.ConsumerOffsetsTopicName {
+		if err := validateEventRetention(policy, true); err != nil {
+			return d, err
+		}
+	}
 	d.Policy = policy
 	d.Policy = policy.Clone()
 	return d, nil

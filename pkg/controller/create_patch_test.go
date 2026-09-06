@@ -251,7 +251,7 @@ func TestRepeatedCreateStillRejectsCompactEventSourcingTopic(t *testing.T) {
 	ch, _ := newTestHandler(t)
 	ctx := NewClientContext("", 0)
 	require.True(t, strings.HasPrefix(ch.HandleCommand(
-		"CREATE topic=events partitions=1 event_sourcing=true cleanup_policy=delete retention_hours=168",
+		"CREATE topic=events partitions=1 event_sourcing=true cleanup_policy=delete",
 		ctx,
 	), "OK "))
 
@@ -260,5 +260,5 @@ func TestRepeatedCreateStillRejectsCompactEventSourcingTopic(t *testing.T) {
 	definition := ch.TopicManager.GetTopic("events").Definition()
 	require.True(t, definition.EventSourcing)
 	require.Equal(t, config.CleanupPolicyDelete, definition.Policy.CleanupPolicy)
-	require.Equal(t, 168, definition.Policy.RetentionHours)
+	require.Zero(t, definition.Policy.RetentionHours)
 }

@@ -114,6 +114,9 @@ func (p Policy) EffectiveMinInSyncReplicas(brokerDefault int) int {
 }
 
 func validateCleanupPolicyForTopic(policy Policy, cfg *config.Config, eventSourcing bool) error {
+	if err := validateEventRetention(policy, eventSourcing); err != nil {
+		return err
+	}
 	if !config.HasCleanupPolicy(policy.CleanupPolicy, config.CleanupPolicyCompact) {
 		return nil
 	}
@@ -121,6 +124,22 @@ func validateCleanupPolicyForTopic(policy Policy, cfg *config.Config, eventSourc
 		return fmt.Errorf("cleanup policy compact is not supported for event-sourcing topics")
 	}
 	return nil
+}
+
+func validateEventRetention(policy Policy, eventSourcing bool) error {
+	if eventSourcing && (policy.RetentionHours > 0 || policy.RetentionBytes > 0) {
+		return fmt.Errorf("retention limits are not supported for event-sourcing topics; complete event history is required")
+	}
+	return nil
+}
+
+func storagePolicyForTopic(policy Policy, eventSourcing bool) Policy {
+	if eventSourcing {
+		// Event indexes are rebuilt from the complete log, not from snapshots.
+		policy.RetentionHours = -1
+		policy.RetentionBytes = -1
+	}
+	return policy
 }
 
 func (p Policy) CanRead() bool {
