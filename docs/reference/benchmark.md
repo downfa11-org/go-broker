@@ -67,7 +67,7 @@ Those require purpose-built workloads and failure tests. Do not infer them from 
 
 ## CI Policy
 
-Normal E2E runs on pull requests. The Docker benchmark runs only on pushes to `main`, after normal E2E succeeds, in the final step of `.github/workflows/e2e-tests.yml`. It builds its own standalone/cluster compose images; Docker layer caching may help, but the active E2E containers are not reused.
+Normal E2E and benchmark verdict unit tests run on pull requests. The Docker benchmark runs automatically on pushes to `main`, after normal E2E succeeds, in the final step of `.github/workflows/e2e-tests.yml`. It can also run on a selected branch by manually dispatching **E2E Tests** with `run_benchmarks=true`. It builds its own standalone/cluster compose images; Docker layer caching may help, but the active E2E containers are not reused.
 
 ## Storage Microbenchmarks
 

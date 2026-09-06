@@ -37,6 +37,7 @@ Without `RUN_E2E_BENCHMARK=1`, Docker benchmark tests skip. `go test -short` als
 A run passes only when:
 
 - publisher and consumer containers exit with code 0,
+- Docker reports no OOM kill or engine error, and complete container state and logs are available,
 - publisher reports `Failed messages: 0` and a 100% rate,
 - consumer reports `All messages consumed`,
 - `Message missing`, `Duplicate (MessageID)`, and `Duplicate (Offset)` are all zero,
@@ -68,6 +69,8 @@ Relevant containers are `bench-publisher`/`bench-consumer` and `broker-publisher
 ## CI
 
 `.github/workflows/e2e-tests.yml` runs normal E2E tests on pull requests and pushes. The 100,000-record Docker benchmark is a final step only for a push to `main`, after `make e2e` succeeds, with `RUN_E2E_BENCHMARK=1`.
+
+Benchmark verdict unit tests also run on pull requests with the race detector. To run both fixed workloads on a selected branch before merging, manually dispatch **E2E Tests** with `run_benchmarks=true`. This is still the 100,000-record tmpfs correctness workload, not a target-rate, physical-disk, long-duration production acceptance test.
 
 The benchmark uses its own compose files and therefore performs its own image builds; it does not directly reuse the already running E2E compose stack. Docker layer cache may reduce repeated work. PR CI intentionally avoids this cold-build cost.
 
