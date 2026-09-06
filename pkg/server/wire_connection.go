@@ -100,24 +100,12 @@ func isStreamClosePayload(payload []byte) bool {
 	return false
 }
 
-func negotiateServerConnection(conn net.Conn) (*wire.Connection, *serverWireConn, error) {
-	return negotiateServerConnectionWithAdmission(conn, nil)
-}
-
 func negotiateServerConnectionWithAdmission(conn net.Conn, admit wire.FrameAdmission) (*wire.Connection, *serverWireConn, error) {
 	connection, err := wire.ServerHandshakeWithAdmission(conn, brokerCompressions, admit)
 	if err != nil {
 		return nil, nil, err
 	}
 	return connection, newServerWireConn(conn, connection), nil
-}
-
-func readWireRequest(connection *wire.Connection) (wire.Frame, error) {
-	frame, release, err := readWireRequestWithAdmission(connection, nil)
-	if release != nil {
-		release()
-	}
-	return frame, err
 }
 
 func readWireRequestWithAdmission(connection *wire.Connection, admit wire.FrameAdmission) (wire.Frame, func(), error) {
