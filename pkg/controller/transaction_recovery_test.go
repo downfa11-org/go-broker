@@ -157,6 +157,13 @@ func TestStandaloneJournalRecoversPreparedTransactionAfterRestart(t *testing.T) 
 	generation := prepareTransactionGroup(t, tm, coord, topicName, groupName, memberID)
 
 	producerID, epoch := initAndStageTransaction(t, ch, "tx-journal-recovery", topicName, groupName, memberID, generation, 17)
+	require.NoError(t, ch.syncTransactionState("tx-journal-recovery"))
+	require.NoError(t, ch.TxnManager.AddMessage("tx-journal-recovery", producerID, epoch, transaction.MessageOperation{
+		Topic: topicName, Partition: 0,
+		Message: types.Message{Payload: "second-output", ProducerID: producerID, SeqNum: 2, Epoch: epoch,
+			TransactionalID: "tx-journal-recovery", TransactionState: types.TransactionStateOpen},
+	}))
+	require.NoError(t, ch.syncTransactionState("tx-journal-recovery"))
 	tx, err := ch.TxnManager.PrepareCommit("tx-journal-recovery", producerID, epoch)
 	require.NoError(t, err)
 	require.NoError(t, ch.syncTransactionState("tx-journal-recovery"))
@@ -168,9 +175,10 @@ func TestStandaloneJournalRecoversPreparedTransactionAfterRestart(t *testing.T) 
 	status, err := restarted.TxnManager.Status("tx-journal-recovery")
 	require.NoError(t, err)
 	require.Equal(t, transaction.StateCommitting, status.State)
+	require.Len(t, status.Messages, 2)
 
 	require.NoError(t, restarted.RecoverPreparedTransactions())
-	require.Equal(t, []string{"payload-tx-journal-recovery"}, readCommittedPayloads(t, tm, topicName))
+	require.Equal(t, []string{"payload-tx-journal-recovery", "second-output"}, readCommittedPayloads(t, tm, topicName))
 	offset, ok := coord.GetOffset(groupName, topicName, 0)
 	require.True(t, ok)
 	require.Equal(t, uint64(17), offset)
@@ -180,6 +188,8 @@ func TestStandaloneJournalRecoversPreparedTransactionAfterRestart(t *testing.T) 
 	finalStatus, err := reloaded.TxnManager.Status("tx-journal-recovery")
 	require.NoError(t, err)
 	require.Equal(t, transaction.StateCommitted, finalStatus.State)
+	require.NoError(t, reloaded.RecoverPreparedTransactions())
+	require.Equal(t, []string{"payload-tx-journal-recovery", "second-output"}, readCommittedPayloads(t, tm, topicName))
 }
 func TestRecoverPreparedTransactionsIsIdempotentAfterCommitWindow(t *testing.T) {
 	ch, tm, coord, _ := newDiskBackedTransactionHandler(t)
