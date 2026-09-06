@@ -110,6 +110,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.cluster.internalSecretName }}
                   key: token
+            {{- else }}
+            - name: ADVERTISED_CLIENT_HOST
+              value: "{{ include "cursus.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.cluster.domain }}"
             {{- end }}
             {{- if .Values.tls.enabled }}  
             - name: USE_TLS

@@ -113,7 +113,7 @@ func NewProducerWithContext(ctx context.Context, cfg *PublisherConfig) (*Produce
 	if err != nil {
 		return nil, fmt.Errorf("create producer client: %w", err)
 	}
-	bootstrap := &Producer{config: cfg}
+	bootstrap := &Producer{config: cfg, client: client}
 	if err := bootstrap.createConfiguredTopic(); err != nil {
 		_ = client.Close()
 		return nil, err
