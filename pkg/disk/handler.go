@@ -349,6 +349,11 @@ func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.
 	case d.writeCh <- diskMsg:
 	}
 	d.Flush()
+	select {
+	case <-d.done:
+		return 0, fmt.Errorf("disk handler is shutting down")
+	default:
+	}
 	if err := d.writeAvailabilityError(); err != nil {
 		return 0, err
 	}
