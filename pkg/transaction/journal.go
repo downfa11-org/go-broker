@@ -28,12 +28,14 @@ type journalRecord struct {
 
 // Journal durably appends standalone transaction coordinator snapshots.
 type Journal struct {
-	mu       sync.Mutex
-	path     string
-	validEnd int64
-	loaded   bool
-	latest   map[string]*Snapshot
-	records  int
+	mu               sync.Mutex
+	path             string
+	validEnd         int64
+	loaded           bool
+	latest           map[string]*Snapshot
+	records          int
+	compactedBytes   int64
+	compactedRecords int
 }
 
 func OpenJournal(path string) (*Journal, error) {
@@ -119,7 +121,7 @@ func (j *Journal) Append(snap *Snapshot) (err error) {
 }
 
 func (j *Journal) shouldCompactLocked() bool {
-	return j.records >= journalCompactionRecords || j.validEnd >= journalCompactionBytes
+	return j.records-j.compactedRecords >= journalCompactionRecords || j.validEnd-j.compactedBytes >= journalCompactionBytes
 }
 
 // Rewrite atomically replaces the journal with the supplied authoritative
@@ -213,6 +215,8 @@ func (j *Journal) compactLocked() (err error) {
 	if syncErr := syncJournalDirectory(dir); syncErr != nil {
 		return syncErr
 	}
+	j.compactedBytes = j.validEnd
+	j.compactedRecords = j.records
 	return nil
 }
 
@@ -223,6 +227,7 @@ func (j *Journal) Load() (map[string]*Snapshot, error) {
 }
 
 func (j *Journal) loadLocked() (map[string]*Snapshot, error) {
+	j.compactedBytes, j.compactedRecords = 0, 0
 	file, err := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open transaction journal for recovery: %w", err)

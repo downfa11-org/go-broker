@@ -73,6 +73,10 @@ Asynchronous writes enter a buffered `writeCh` (default capacity 1024). `flushLo
 
 A write being visible in the process page cache is different from surviving power loss. Client acknowledgements and replicated HWM advancement must be interpreted according to the selected publish/replication path and the synced committed-tail contract, not merely successful channel enqueue.
 
+Standalone batches validate producer sequence transitions before enqueueing and share one explicit queue-draining sync boundary, instead of syncing each message. Segment rotations or background sync may add sync calls. HWM and producer state advance only after batch success; a storage failure remains an uncertain outcome, not an atomic batch rollback. Alternate storage implementations without allocating-batch support retain the single-message fallback.
+
+Transaction updates snapshot only the affected ID. Journal compaction thresholds measure bytes/records added since the last compaction, so a large live transaction set does not force a full rewrite on every append. Journal records still contain a complete snapshot of that transaction; large individual transactions retain snapshot-write amplification.
+
 ## Recovery
 
 Startup recovery scans the entire active segment, including records before the last sparse index entry, validates lengths/checksums and contiguous offsets, and removes only a trailing partial record. Complete malformed or checksum-invalid records fail startup without truncation. Closed segments are checksum-validated when read; this is not a full startup scrub of every closed segment. A detected decode failure fences further writes and makes disk readiness fail until restart and repair from a verified backup/replica. It rebuilds or opens the sparse index and clamps recovered committed high watermarks to the durable tail.

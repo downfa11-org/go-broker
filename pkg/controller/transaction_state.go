@@ -8,9 +8,7 @@ import (
 )
 
 func (ch *CommandHandler) snapshotTransaction(txnID string) (*transaction.Snapshot, bool) {
-	state := ch.TxnManager.ExportState()
-	snapshot, ok := state[txnID]
-	return snapshot, ok
+	return ch.TxnManager.SnapshotByID(txnID)
 }
 
 func (ch *CommandHandler) restoreTransaction(txnID string, snapshot *transaction.Snapshot, hadPrevious bool) {
@@ -52,9 +50,8 @@ func (ch *CommandHandler) syncTransactionState(txnID string) error {
 	if ch.transactionStateSyncHook != nil {
 		return ch.transactionStateSyncHook(txnID)
 	}
-	snapshots := ch.TxnManager.ExportState()
-	snapshot := snapshots[txnID]
-	if snapshot == nil {
+	snapshot, ok := ch.TxnManager.SnapshotByID(txnID)
+	if !ok {
 		return fmt.Errorf("transaction %s not found", txnID)
 	}
 	if !ch.isDistributed() {
