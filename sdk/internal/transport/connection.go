@@ -84,7 +84,15 @@ func Dial(ctx context.Context, addr string, config DialConfig) (*Conn, error) {
 	}
 	conn := raw
 	if config.TLS != nil {
-		tlsConn := tls.Client(raw, config.TLS.Clone())
+		tlsConfig := config.TLS.Clone()
+		if tlsConfig.ServerName == "" {
+			host, _, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return closeOnError(fmt.Errorf("TLS address %s: %w", addr, splitErr))
+			}
+			tlsConfig.ServerName = host
+		}
+		tlsConn := tls.Client(raw, tlsConfig)
 		handshakeCtx, cancel := context.WithTimeout(ctx, config.HandshakeTimeout)
 		err = tlsConn.HandshakeContext(handshakeCtx)
 		cancel()

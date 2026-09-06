@@ -132,7 +132,9 @@ RUN_E2E_BACKUP_RESTORE=1 go test -v -count=1 -timeout 25m ./test/e2e-cluster -ru
 
 The test refuses to replace pre-existing containers, recreates only its isolated Compose project, and removes its temporary archives on completion. Export and protect production backups separately; never point this test at production storage.
 
-Validate the rendered resources with `go test ./test/helm` and run the deployment CI before promotion. The manual Deployment Validation workflow can repeat recovery drills 1–5 times. These drills recreate test clusters and are not a continuous production-load soak. Kubernetes installation, certificate/CNI behavior, full-volume restore, sustained workload and latency/memory budgets must still be verified on the deployment's real storage/network before declaring it production-ready.
+Validate the rendered resources with `go test ./test/helm` and run the deployment CI before promotion. Its `helm-runtime` job creates a disposable four-node [kind cluster](https://kind.sigs.k8s.io/docs/user/quick-start/), installs standalone and three-broker Helm releases with TLS/authentication and PVCs, and uses only the public Go SDK to publish/read records. It replaces every broker Pod, verifies retained PVC identities, then checks all original records plus new writes. Cluster Pods must run on three distinct workers. The fixture has its own kubeconfig and refuses to reuse a cluster; it runs only in GitHub Actions and deletes only its own kind cluster.
+
+This fixture uses ephemeral test certificates and kind's local storage/default networking. It does not prove NetworkPolicy enforcement, Prometheus alert delivery, CSI backup behavior or production capacity. The manual Deployment Validation workflow can also repeat recovery drills 1–5 times. These drills recreate test clusters and are not a continuous production-load soak. Certificate/CNI behavior, full-volume restore, sustained workload and latency/memory budgets must still be verified on the deployment's real storage/network before declaring it production-ready.
 
 ## Verify
 

@@ -27,6 +27,29 @@ permissions:
   contents: read
 
 jobs:
+  helm-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.2'
+          cache: true
+      - uses: azure/setup-helm@v4
+      - name: Install pinned kind
+        run: go install sigs.k8s.io/kind@v0.33.0
+      - name: Compile isolated SDK fixture
+        run: go test -count=1 ./test/helm-runtime
+      - name: Build broker and SDK fixture images
+        run: |
+          docker build -t cursus:helm-runtime .
+          docker build -f test/helm-runtime/Dockerfile -t cursus-helm-smoke:runtime .
+      - name: Verify secure standalone and cluster PVC recovery on Kubernetes
+        run: bash test/helm-runtime/run.sh
+
   extended-recovery:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
