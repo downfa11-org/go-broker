@@ -1,10 +1,12 @@
-{{- if .Values.persistence.enabled }}
+{{- if and .Values.persistence.enabled (ne .Values.mode "cluster") }}
 apiVersion: v1  
 kind: PersistentVolumeClaim  
 metadata:  
   name: {{ include "cursus.fullname" . }}-logs  
 spec:  
-  storageClassName: {{ .Values.persistence.storageClass | default "" }}  
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
   accessModes:  
     - ReadWriteOnce
   resources:  

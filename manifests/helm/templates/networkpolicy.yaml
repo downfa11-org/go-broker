@@ -1,0 +1,44 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cursus.fullname" . }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cursus.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.clientPodSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.monitoringNamespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.monitoringPodSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.metricsPort }}
+        - protocol: TCP
+          port: {{ .Values.service.healthPort }}
+    {{- if eq .Values.mode "cluster" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cursus.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.cluster.raftPort }}
+        - protocol: TCP
+          port: {{ .Values.cluster.discoveryPort }}
+        - protocol: TCP
+          port: {{ .Values.cluster.internalPort }}
+    {{- end }}
+{{- end }}

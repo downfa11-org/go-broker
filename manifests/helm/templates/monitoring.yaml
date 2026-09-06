@@ -16,6 +16,7 @@ spec:
       targetPort: metrics
   selector:
     {{- include "cursus.selectorLabels" . | nindent 4 }}
+{{- if .Values.monitoring.serviceMonitor.enabled }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -31,4 +32,5 @@ spec:
     - port: metrics
       interval: {{ .Values.monitoring.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+{{- end }}
 {{- end }}
