@@ -2,7 +2,6 @@ package transaction
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -16,14 +15,17 @@ import (
 const (
 	maxJournalRecordBytes    = 32 << 20
 	journalFormatVersion     = 1
+	journalDeltaVersion      = 2
 	journalRecordOverhead    = 8
 	journalCompactionBytes   = 16 << 20
 	journalCompactionRecords = 256
 )
 
 type journalRecord struct {
-	Version     int       `json:"version"`
-	Transaction *Snapshot `json:"transaction"`
+	Version       int       `json:"version"`
+	Transaction   *Snapshot `json:"transaction"`
+	BaseDigest    string    `json:"base_digest,omitempty"`
+	MessagePrefix *int      `json:"message_prefix,omitempty"`
 }
 
 // Journal durably appends standalone transaction coordinator snapshots.
@@ -33,6 +35,7 @@ type Journal struct {
 	validEnd         int64
 	loaded           bool
 	latest           map[string]*Snapshot
+	bases            map[string]journalBase
 	records          int
 	compactedBytes   int64
 	compactedRecords int
@@ -60,21 +63,6 @@ func (j *Journal) Append(snap *Snapshot) (err error) {
 	if snap == nil || snap.ID == "" {
 		return fmt.Errorf("invalid transaction snapshot")
 	}
-	payload, err := json.Marshal(journalRecord{Version: journalFormatVersion, Transaction: snap})
-	if err != nil {
-		return fmt.Errorf("marshal transaction snapshot: %w", err)
-	}
-	payloadLen := len(payload)
-	if payloadLen == 0 || payloadLen > maxJournalRecordBytes {
-		return fmt.Errorf("transaction snapshot size %d exceeds journal limit", payloadLen)
-	}
-
-	var header [4]byte
-	payloadSize := uint32(payloadLen) // #nosec G115 -- bounded by maxJournalRecordBytes above.
-	binary.BigEndian.PutUint32(header[:], payloadSize)
-	var checksum [4]byte
-	binary.BigEndian.PutUint32(checksum[:], crc32.ChecksumIEEE(payload))
-
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if !j.loaded {
@@ -87,6 +75,18 @@ func (j *Journal) Append(snap *Snapshot) (err error) {
 			return fmt.Errorf("compact transaction journal: %w", err)
 		}
 	}
+	payload, basis, err := encodeJournalUpdate(snap, j.latest[snap.ID], j.bases[snap.ID])
+	if err != nil {
+		return err
+	}
+	payloadLen := len(payload)
+	if payloadLen == 0 || payloadLen > maxJournalRecordBytes {
+		return fmt.Errorf("transaction snapshot size %d exceeds journal limit", payloadLen)
+	}
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(payloadLen)) // #nosec G115 -- bounded above.
+	var checksum [4]byte
+	binary.BigEndian.PutUint32(checksum[:], crc32.ChecksumIEEE(payload))
 
 	file, err := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -116,6 +116,7 @@ func (j *Journal) Append(snap *Snapshot) (err error) {
 	}
 	j.validEnd += int64(journalRecordOverhead) + int64(payloadLen)
 	j.latest[snap.ID] = snapshot(transactionFromSnapshot(snap))
+	j.bases[snap.ID] = basis
 	j.records++
 	return nil
 }
@@ -151,6 +152,11 @@ func (j *Journal) Rewrite(state map[string]*Snapshot) error {
 }
 
 func (j *Journal) compactLocked() (err error) {
+	defer func() {
+		if err != nil {
+			j.loaded = false
+		}
+	}()
 	dir := filepath.Dir(j.path)
 	temp, err := os.CreateTemp(dir, filepath.Base(j.path)+".compact-*")
 	if err != nil {
@@ -173,12 +179,13 @@ func (j *Journal) compactLocked() (err error) {
 	sort.Strings(ids)
 
 	var compactedSize int64
+	bases := make(map[string]journalBase, len(ids))
 	for _, id := range ids {
 		snap := j.latest[id]
 		if snap == nil || snap.ID == "" {
 			return fmt.Errorf("invalid transaction snapshot for %q during compaction", id)
 		}
-		payload, marshalErr := json.Marshal(journalRecord{Version: journalFormatVersion, Transaction: snap})
+		payload, basis, marshalErr := encodeJournalUpdate(snap, nil, journalBase{})
 		if marshalErr != nil {
 			return fmt.Errorf("marshal transaction snapshot %q during compaction: %w", id, marshalErr)
 		}
@@ -199,6 +206,7 @@ func (j *Journal) compactLocked() (err error) {
 			return fmt.Errorf("write compacted transaction journal checksum: %w", writeErr)
 		}
 		compactedSize += int64(journalRecordOverhead + len(payload))
+		bases[id] = basis
 	}
 	if syncErr := temp.Sync(); syncErr != nil {
 		return fmt.Errorf("sync compacted transaction journal: %w", syncErr)
@@ -217,6 +225,7 @@ func (j *Journal) compactLocked() (err error) {
 	}
 	j.compactedBytes = j.validEnd
 	j.compactedRecords = j.records
+	j.bases = bases
 	return nil
 }
 
@@ -227,6 +236,7 @@ func (j *Journal) Load() (map[string]*Snapshot, error) {
 }
 
 func (j *Journal) loadLocked() (map[string]*Snapshot, error) {
+	j.loaded = false
 	j.compactedBytes, j.compactedRecords = 0, 0
 	file, err := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -240,12 +250,13 @@ func (j *Journal) loadLocked() (map[string]*Snapshot, error) {
 	}
 	size := info.Size()
 	latest := make(map[string]*Snapshot)
+	bases := make(map[string]journalBase)
 	var offset int64
 	records := 0
 
 	for offset < size {
 		if size-offset < 4 {
-			return j.repairTail(file, offset, latest, records)
+			return j.repairTail(file, offset, latest, bases, records)
 		}
 
 		var header [4]byte
@@ -255,14 +266,14 @@ func (j *Journal) loadLocked() (map[string]*Snapshot, error) {
 		payloadSize := int64(binary.BigEndian.Uint32(header[:]))
 		if payloadSize <= 0 || payloadSize > maxJournalRecordBytes {
 			if offset+4 == size {
-				return j.repairTail(file, offset, latest, records)
+				return j.repairTail(file, offset, latest, bases, records)
 			}
 			return nil, fmt.Errorf("invalid transaction journal record size %d at %d", payloadSize, offset)
 		}
 
 		recordEnd := offset + 4 + payloadSize + 4
 		if recordEnd > size {
-			return j.repairTail(file, offset, latest, records)
+			return j.repairTail(file, offset, latest, bases, records)
 		}
 
 		payload := make([]byte, payloadSize)
@@ -277,35 +288,35 @@ func (j *Journal) loadLocked() (map[string]*Snapshot, error) {
 		actual := crc32.ChecksumIEEE(payload)
 		if actual != expected {
 			if recordEnd == size {
-				return j.repairTail(file, offset, latest, records)
+				return j.repairTail(file, offset, latest, bases, records)
 			}
 			return nil, fmt.Errorf("transaction journal checksum mismatch at %d", offset)
 		}
 
-		snap, err := decodeJournalSnapshot(payload)
+		snap, basis, err := decodeJournalUpdate(payload, latest, bases)
 		if err != nil {
 			return nil, fmt.Errorf("decode transaction journal record at %d: %w", offset, err)
 		}
-		if err := mergeJournalSnapshot(latest, snap); err != nil {
-			return nil, fmt.Errorf("merge transaction journal record at %d: %w", offset, err)
-		}
+		latest[snap.ID], bases[snap.ID] = snap, basis
 		records++
 		offset = recordEnd
 	}
 	j.validEnd = offset
 	j.loaded = true
 	j.latest = latest
+	j.bases = bases
 	j.records = records
 	return cloneJournalState(latest), nil
 }
 
-func (j *Journal) repairTail(file *os.File, offset int64, latest map[string]*Snapshot, records int) (map[string]*Snapshot, error) {
+func (j *Journal) repairTail(file *os.File, offset int64, latest map[string]*Snapshot, bases map[string]journalBase, records int) (map[string]*Snapshot, error) {
 	if err := repairJournalTail(file, offset); err != nil {
 		return nil, err
 	}
 	j.validEnd = offset
 	j.loaded = true
 	j.latest = latest
+	j.bases = bases
 	j.records = records
 	return cloneJournalState(latest), nil
 }
@@ -327,28 +338,6 @@ func cloneJournalState(state map[string]*Snapshot) map[string]*Snapshot {
 		cloned[id] = &copySnapshot
 	}
 	return cloned
-}
-
-func decodeJournalSnapshot(payload []byte) (*Snapshot, error) {
-	var record journalRecord
-	if err := json.Unmarshal(payload, &record); err != nil {
-		return nil, err
-	}
-	if record.Version != journalFormatVersion {
-		return nil, fmt.Errorf("unsupported transaction journal version %d; clean bootstrap required", record.Version)
-	}
-	if record.Transaction == nil || record.Transaction.ID == "" {
-		return nil, fmt.Errorf("journal transaction is missing")
-	}
-	return record.Transaction, nil
-}
-
-func mergeJournalSnapshot(latest map[string]*Snapshot, incoming *Snapshot) error {
-	// Per-transaction controller locks serialize journal appends. The final
-	// record is authoritative even when an expired transactional ID starts a
-	// fresh producer epoch with lower revision metadata.
-	latest[incoming.ID] = incoming
-	return nil
 }
 
 func repairJournalTail(file *os.File, offset int64) error {

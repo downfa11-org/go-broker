@@ -16,15 +16,15 @@ func TestDecodeJournalSnapshotRejectsUnversionedAndUnknownVersions(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeJournalSnapshot(payload); err == nil {
+	if _, _, err := decodeJournalUpdate(payload, nil, nil); err == nil {
 		t.Fatal("expected an unversioned journal snapshot to fail")
 	}
 
-	payload, err = json.Marshal(journalRecord{Version: journalFormatVersion + 1, Transaction: snapshot})
+	payload, err = json.Marshal(journalRecord{Version: journalDeltaVersion + 1, Transaction: snapshot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeJournalSnapshot(payload); err == nil {
+	if _, _, err := decodeJournalUpdate(payload, nil, nil); err == nil {
 		t.Fatal("expected an unsupported journal version to fail")
 	}
 }

@@ -41,6 +41,28 @@ a process RSS cap: concurrent coordinators and replicated recovery can exceed
 the local budget. Request buffers, event indexes and journal/snapshot copies
 need separate memory capacity. Do not delete durable state to clear a limit.
 
+## Standalone journal growth
+
+Standalone coordinator transitions remain fsynced before success. Version-1 full
+snapshots remain readable; version-2 records can replace transaction metadata and
+offsets while appending only new messages to an unchanged message prefix. Each
+delta names the SHA-256 digest of that transaction's immediately preceding record
+and its exact message count. Missing, reordered or mismatched bases fail recovery,
+including a structurally complete final record. Changed message history, a new
+producer identity/epoch, and compaction write full snapshots instead.
+
+Compaction still runs after sufficient new bytes or records and rebuilds delta
+bases. Recovered full transaction state retains the 32 MiB serialized journal
+limit; repeated small deltas cannot bypass it. A failed rewrite forces the next
+operation to reload the durable file before choosing a delta base. Existing torn
+tail repair and record CRC checks still apply.
+
+Back up the entire journal with the rest of the stopped broker's persistence unit,
+not individual delta records. Do not downgrade to a reader that understands only
+version 1 after version-2 records are written. This reduces repeated standalone
+journal bytes, not fsync frequency or all transaction-copy CPU work. Distributed
+`TXN_SYNC` still carries full snapshots and is a separate optimization path.
+
 ## Prepared transaction recovery
 
 Ownership and non-regressing offsets are validated before a new prepare becomes
