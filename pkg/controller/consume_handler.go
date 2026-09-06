@@ -13,6 +13,7 @@ import (
 	"github.com/cursus-io/cursus/pkg/stream"
 	"github.com/cursus-io/cursus/pkg/topic"
 	"github.com/cursus-io/cursus/pkg/types"
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -21,10 +22,15 @@ var ErrStreamRejected = errors.New("stream rejected")
 const (
 	ReadIsolationCommitted   = "read_committed"
 	ReadIsolationUncommitted = "read_uncommitted"
+	MaxConsumeBatchRecords   = 1024
+	MaxConsumeWait           = 30 * time.Second
 )
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
 func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx *ClientContext) (int, error) {
+	if err := ctx.RequestContext().Err(); err != nil {
+		return 0, err
+	}
 	// CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>]
 	argsMap := parseKeyValueArgs(rawCmd[8:])
 	if authResp := ch.authenticateInline(argsMap, ctx); authResp != "" {
@@ -40,6 +46,20 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	if err != nil {
 		return 0, err
 	}
+	cArgs.readBudget, err = util.NewBatchReadBudget(cArgs.TopicName, cArgs.PartitionID, wire.MaxFramePayload)
+	if err != nil {
+		return 0, err
+	}
+	previousOffsets := make(map[string]uint64, len(ctx.OffsetCache))
+	for key, offset := range ctx.OffsetCache {
+		previousOffsets[key] = offset
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			ctx.OffsetCache = previousOffsets
+		}
+	}()
 	if err := ch.checkPartitionLeaderOrRedirect(conn, cArgs.TopicName, cArgs.PartitionID); err != nil {
 		if err.Error() == "not partition leader" {
 			return 0, nil
@@ -84,7 +104,11 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		defer ticker.Stop()
 
 		for time.Since(startTime) < cArgs.WaitTimeout {
-			<-ticker.C
+			select {
+			case <-ctx.RequestContext().Done():
+				return 0, ctx.RequestContext().Err()
+			case <-ticker.C:
+			}
 			for _, tName := range matchedTopics {
 				messages, err := ch.readFromTopic(tName, cArgs, ctx, cArgs.BatchSize)
 				if err != nil {
@@ -109,9 +133,11 @@ sendBatch:
 	}
 
 	if err := util.WriteWithLength(conn, batchData); err != nil {
+		_ = conn.Close()
 		return 0, fmt.Errorf("failed to stream batch: %w", err)
 	}
 
+	completed = true
 	return totalStreamed, nil
 }
 
@@ -148,7 +174,19 @@ func (ch *CommandHandler) readFromTopic(topicName string, cArgs CommonArgs, ctx 
 		currentOffset = actualOffset
 	}
 
-	messages, err := readPartitionMessages(p, currentOffset, batchSize, cArgs.ReadIsolation)
+	budget := cArgs.readBudget
+	if budget == nil {
+		budget, err = util.NewBatchReadBudget(topicName, cArgs.PartitionID, wire.MaxFramePayload)
+		if err != nil {
+			return nil, err
+		}
+	}
+	messages, err := budget.Read(currentOffset, batchSize, func(offset uint64, max int) ([]types.Message, error) {
+		if err := ctx.RequestContext().Err(); err != nil {
+			return nil, err
+		}
+		return readPartitionMessages(p, offset, max, cArgs.ReadIsolation)
+	})
 	if err != nil {
 		util.Error("Failed to read messages from topic %s: %v", topicName, err)
 		return nil, err
@@ -373,6 +411,7 @@ func (ch *CommandHandler) resolveConsumerGroup(groupName string) string {
 }
 
 type CommonArgs struct {
+	readBudget      *util.BatchReadBudget
 	TopicName       string
 	PartitionID     int
 	GroupName       string
@@ -413,12 +452,20 @@ func (ch *CommandHandler) parseCommonArgs(args map[string]string) (CommonArgs, e
 	}
 
 	batch := DefaultMaxPollRecords
-	if b, err := strconv.Atoi(args["batch"]); err == nil && b > 0 {
+	if raw, ok := args["batch"]; ok {
+		b, err := strconv.Atoi(raw)
+		if err != nil || b < 1 || b > MaxConsumeBatchRecords {
+			return CommonArgs{}, fmt.Errorf("invalid batch: must be between 1 and %d", MaxConsumeBatchRecords)
+		}
 		batch = b
 	}
 
 	wait := 0 * time.Millisecond
-	if w, err := strconv.Atoi(args["wait_ms"]); err == nil && w > 0 {
+	if raw, ok := args["wait_ms"]; ok {
+		w, err := strconv.Atoi(raw)
+		if err != nil || w < 0 || w > int(MaxConsumeWait/time.Millisecond) {
+			return CommonArgs{}, fmt.Errorf("invalid wait_ms: must be between 0 and %d", MaxConsumeWait/time.Millisecond)
+		}
 		wait = time.Duration(w) * time.Millisecond
 	}
 

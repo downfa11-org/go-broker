@@ -81,6 +81,9 @@ func (h *Handler) getIndex(topicName string, partitionID int) (*StreamIndex, err
 	defer h.mu.Unlock()
 
 	// Double-check after acquiring write lock.
+	if h.closed {
+		return nil, fmt.Errorf("handler is closed")
+	}
 	if idx, ok := h.indexes[key]; ok {
 		return idx, idx.recoveryError()
 	}
@@ -126,6 +129,9 @@ func (h *Handler) getSnapshot(topicName string, partitionID int) (*SnapshotStore
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.closed {
+		return nil, fmt.Errorf("handler is closed")
+	}
 	if ss, ok := h.snapshots[key]; ok {
 		return ss, nil
 	}
@@ -145,6 +151,10 @@ func (h *Handler) getSnapshot(topicName string, partitionID int) (*SnapshotStore
 // PrepareCommittedIndex captures the currently indexed committed tail before a
 // follower advances its HWM.
 func (h *Handler) PrepareCommittedIndex(topicName string, partitionID int) error {
+	if !h.beginOperation() {
+		return fmt.Errorf("handler closed")
+	}
+	defer h.wg.Done()
 	_, err := h.getIndex(topicName, partitionID)
 	return err
 }
@@ -152,6 +162,10 @@ func (h *Handler) PrepareCommittedIndex(topicName string, partitionID int) error
 // IndexCommittedToHWM advances the derived stream index only through records
 // visible below the partition's stable committed boundary.
 func (h *Handler) IndexCommittedToHWM(topicName string, partitionID int, targetHWM uint64) error {
+	if !h.beginOperation() {
+		return fmt.Errorf("handler closed")
+	}
+	defer h.wg.Done()
 	h.indexSyncMu.Lock()
 	defer h.indexSyncMu.Unlock()
 
@@ -220,6 +234,10 @@ func (h *Handler) IndexCommittedToHWM(topicName string, partitionID int, targetH
 }
 
 func (h *Handler) RecoverIndexFromLog(topicName string, partitionID int, idx *StreamIndex) error {
+	if !h.beginOperation() {
+		return fmt.Errorf("handler closed")
+	}
+	defer h.wg.Done()
 	_, err := h.recoverIndexFromLog(topicName, partitionID, idx)
 	return err
 }
@@ -321,7 +339,9 @@ func (r *AppendResult) Response() string {
 }
 
 func (h *Handler) AppendStream(cmd string, opts AppendOptions) (*AppendResult, string) {
-	h.wg.Add(1)
+	if !h.beginOperation() {
+		return nil, "ERROR: handler_closed"
+	}
 	defer h.wg.Done()
 
 	args := parseKeyValueArgs(cmd[len("APPEND_STREAM "):])
@@ -455,7 +475,10 @@ func (h *Handler) AppendStream(cmd string, opts AppendOptions) (*AppendResult, s
 // HandleReadStream writes event data directly to conn.
 // Protocol: two length-prefixed frames — JSON envelope + binary batch.
 func (h *Handler) HandleReadStream(cmd string, conn net.Conn) {
-	h.wg.Add(1)
+	if !h.beginOperation() {
+		writeError(conn, "handler_closed")
+		return
+	}
 	defer h.wg.Done()
 
 	args := parseKeyValueArgs(cmd[len("READ_STREAM "):])
@@ -667,7 +690,9 @@ func (r *SnapshotResult) Response() string {
 }
 
 func (h *Handler) SaveSnapshot(cmd string, afterSave func(result SnapshotResult) error) (*SnapshotResult, string) {
-	h.wg.Add(1)
+	if !h.beginOperation() {
+		return nil, "ERROR: handler_closed"
+	}
 	defer h.wg.Done()
 
 	args := parseKeyValueArgs(cmd[len("SAVE_SNAPSHOT "):])
@@ -728,6 +753,10 @@ func (h *Handler) SaveSnapshot(cmd string, afterSave func(result SnapshotResult)
 }
 
 func (h *Handler) SaveSnapshotReplica(result SnapshotResult) string {
+	if !h.beginOperation() {
+		return "ERROR: handler_closed"
+	}
+	defer h.wg.Done()
 	t := h.tm.GetTopic(result.Topic)
 	if t == nil {
 		return fmt.Sprintf("ERROR: topic_not_found topic=%s", result.Topic)
@@ -750,6 +779,10 @@ func (h *Handler) SaveSnapshotReplica(result SnapshotResult) string {
 
 // ListSnapshots returns all latest snapshots for a topic partition.
 func (h *Handler) ListSnapshots(topicName string, partitionID int) ([]SnapshotResult, string) {
+	if !h.beginOperation() {
+		return nil, "ERROR: handler_closed"
+	}
+	defer h.wg.Done()
 	t := h.tm.GetTopic(topicName)
 	if t == nil {
 		return nil, fmt.Sprintf("ERROR: topic_not_found topic=%s", topicName)
@@ -796,7 +829,9 @@ func (h *Handler) FetchSnapshot(topicName string, partitionID int, key string) (
 //
 //	READ_SNAPSHOT topic=<name> key=<aggregate_key>
 func (h *Handler) HandleReadSnapshot(cmd string) string {
-	h.wg.Add(1)
+	if !h.beginOperation() {
+		return "ERROR: handler_closed"
+	}
 	defer h.wg.Done()
 
 	args := parseKeyValueArgs(cmd[len("READ_SNAPSHOT "):])
@@ -847,7 +882,9 @@ func (h *Handler) HandleReadSnapshot(cmd string) string {
 //
 //	STREAM_VERSION topic=<name> key=<aggregate_key>
 func (h *Handler) HandleStreamVersion(cmd string) string {
-	h.wg.Add(1)
+	if !h.beginOperation() {
+		return "ERROR: handler_closed"
+	}
 	defer h.wg.Done()
 
 	args := parseKeyValueArgs(cmd[len("STREAM_VERSION "):])
@@ -939,6 +976,16 @@ func (h *Handler) Close() error {
 	h.indexes = nil
 	h.snapshots = nil
 	return firstErr
+}
+
+func (h *Handler) beginOperation() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	h.wg.Add(1)
+	return true
 }
 
 // writeError writes the canonical textual error envelope used by the wire

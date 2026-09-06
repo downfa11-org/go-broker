@@ -475,6 +475,9 @@ func handleConnWithContext(ctx context.Context, conn net.Conn, cmdHandler *contr
 		}
 
 		lastActivity = time.Now()
+		if err := conn.SetWriteDeadline(lastActivity.Add(time.Minute)); err != nil {
+			return
+		}
 		responseConn.setRequest(request)
 		shouldExit, err := processMessage(request.Payload, cmdHandler, cmdCtx, responseConn)
 		if err != nil {

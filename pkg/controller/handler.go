@@ -375,6 +375,9 @@ func (ch *CommandHandler) replicationErrorResponse(offset uint64, err error) str
 
 // Close releases resources held by the command handler (e.g., event-sourcing indexes and snapshots).
 func (ch *CommandHandler) Close() error {
+	if ch.StreamManager != nil {
+		ch.StreamManager.Close()
+	}
 	if ch.replication != nil {
 		ch.replication.close()
 	}
