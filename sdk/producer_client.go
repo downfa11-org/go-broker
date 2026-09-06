@@ -193,22 +193,27 @@ func (pc *ProducerClient) ConnectPartition(idx int, addr string) error {
 }
 
 func (pc *ProducerClient) ReconnectPartition(idx int, addr string) error {
-	if addr == "" {
-		addr = pc.selectBroker()
-	}
-	if addr == "" {
-		return fmt.Errorf("no broker address available for partition %d", idx)
-	}
-
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+	if idx < 0 {
+		return fmt.Errorf("invalid partition index: %d", idx)
+	}
 
 	oldPtr := pc.conns.Load()
 	if oldPtr != nil {
 		conns := *oldPtr
 		if idx < len(conns) && conns[idx] != nil {
 			_ = conns[idx].Close()
+			replacement := append([]net.Conn(nil), conns...)
+			replacement[idx] = nil
+			pc.conns.Store(&replacement)
 		}
+	}
+	if addr == "" {
+		addr = pc.selectBroker()
+	}
+	if addr == "" {
+		return fmt.Errorf("no broker address available for partition %d", idx)
 	}
 
 	return pc.connectPartitionLocked(idx, addr)

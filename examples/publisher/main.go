@@ -37,6 +37,8 @@ func main() {
 		time.Sleep(1 * time.Second)
 	}
 
-	p.Flush()
+	if err := p.Flush(); err != nil {
+		log.Printf("flush producer: %v", err)
+	}
 	log.Println("Publisher finished.")
 }

@@ -82,6 +82,12 @@ flowchart TB
 | Framework Integration | — | Spring Boot | FastAPI |
 | Iterator Pattern | — | — | ✅ for/async for |
 
+## Go Producer Delivery Errors
+
+`Producer.Flush() error` waits for queued batches and returns a drain timeout or the first permanent delivery failure. `Producer.Close() error` also reports that failure, including when shutdown times out. Check both return values: accepting a message into the local buffer is not proof of broker delivery. Permanent delivery errors remain visible for the lifetime of the producer.
+
+For acknowledged batches, success requires an `OK` acknowledgement matching the batch's producer ID, epoch, and complete sequence range. Read timeouts, incomplete responses, and invalid acknowledgements discard the partition connection before retrying the unchanged batch. `Acks="0"` does not wait for broker acknowledgement and cannot establish delivery.
+
 ## Cluster Consumer Routing
 
 ```mermaid

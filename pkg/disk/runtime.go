@@ -98,6 +98,9 @@ func (dm *DiskManager) Ready() error {
 		if handler == nil {
 			return fmt.Errorf("storage handler %s is unavailable", key)
 		}
+		if err := handler.writeAvailabilityError(); err != nil {
+			return fmt.Errorf("storage handler %s is not writable: %w", key, err)
+		}
 		select {
 		case <-handler.done:
 			return fmt.Errorf("storage handler %s is closed", key)

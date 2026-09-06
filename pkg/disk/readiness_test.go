@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,4 +39,24 @@ func TestDiskManagerReadyRejectsClosedRegisteredHandler(t *testing.T) {
 		t.Fatal("Ready accepted a closed registered handler")
 	}
 	manager.CloseAllHandlers()
+}
+
+func TestDiskManagerReadyRejectsTerminalWriteFailure(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.LogDir = t.TempDir()
+	manager := NewDiskManager(cfg)
+	storage, err := manager.GetHandler("orders", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.CloseAllHandlers)
+
+	handler := storage.(*DiskHandler)
+	handler.writeFailureMu.Lock()
+	handler.writeFailure = errors.New("injected fsync failure")
+	handler.writeFailureMu.Unlock()
+
+	if err := manager.Ready(); err == nil {
+		t.Fatal("Ready accepted a handler with a terminal write failure")
+	}
 }

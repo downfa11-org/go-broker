@@ -511,7 +511,10 @@ func (d *DiskHandler) Flush() {
 	done := make(chan struct{})
 	select {
 	case d.flushSignal <- done:
-		<-done
+		select {
+		case <-done:
+		case <-d.done:
+		}
 	case <-d.done:
 		return
 	}

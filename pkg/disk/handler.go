@@ -329,15 +329,61 @@ func newDiskHandler(cfg *config.Config, topicName string, partitionID int, clean
 }
 
 func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.Message) (uint64, error) {
+	if partition < 0 || partition > math.MaxInt32 {
+		return 0, fmt.Errorf("partition out of int32 range: %d", partition)
+	}
+	if err := d.writeAvailabilityError(); err != nil {
+		return 0, err
+	}
 	d.appendMu.Lock()
 	defer d.appendMu.Unlock()
 	offset := atomic.LoadUint64(&d.AbsoluteOffset)
 	msg.Offset = offset
-	if err := d.WriteDirect(topic, partition, *msg); err != nil {
-		return 0, fmt.Errorf("WriteDirect failed: %w", err)
+	diskMsg := diskMessageFromMessage(topic, int32(partition), *msg)
+	if err := validateDiskMessageSize(diskMsg); err != nil {
+		return 0, err
+	}
+	select {
+	case <-d.done:
+		return 0, fmt.Errorf("disk handler is shutting down")
+	case d.writeCh <- diskMsg:
+	}
+	d.Flush()
+	select {
+	case <-d.done:
+		return 0, fmt.Errorf("disk handler is shutting down")
+	default:
+	}
+	if err := d.writeAvailabilityError(); err != nil {
+		return 0, err
 	}
 	atomic.StoreUint64(&d.AbsoluteOffset, offset+1)
 	return offset, nil
+}
+
+func diskMessageFromMessage(topic string, partition int32, msg types.Message) types.DiskMessage {
+	return types.DiskMessage{
+		Topic:                        topic,
+		Partition:                    partition,
+		Offset:                       msg.Offset,
+		ProducerID:                   msg.ProducerID,
+		SeqNum:                       msg.SeqNum,
+		Epoch:                        msg.Epoch,
+		Payload:                      msg.Payload,
+		Key:                          msg.Key,
+		EventType:                    msg.EventType,
+		SchemaVersion:                msg.SchemaVersion,
+		AggregateVersion:             msg.AggregateVersion,
+		Metadata:                     msg.Metadata,
+		TransactionalID:              msg.TransactionalID,
+		TransactionState:             msg.TransactionState,
+		TransactionMarker:            msg.TransactionMarker,
+		ControlBatchType:             msg.ControlBatchType,
+		ControlBatchVersion:          msg.ControlBatchVersion,
+		ControlBatchCoordinatorEpoch: msg.ControlBatchCoordinatorEpoch,
+		ControlBatchKey:              msg.ControlBatchKey,
+		ControlBatchValue:            msg.ControlBatchValue,
+	}
 }
 
 // AppendMessageWithOffset writes a message with a pre-assigned offset (for follower replication).
@@ -374,28 +420,7 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Mess
 	offset := atomic.LoadUint64(&d.AbsoluteOffset)
 
 	msg.Offset = offset
-	diskMsg := types.DiskMessage{
-		Topic:                        topic,
-		Partition:                    int32(partition),
-		Offset:                       offset,
-		ProducerID:                   msg.ProducerID,
-		SeqNum:                       msg.SeqNum,
-		Epoch:                        msg.Epoch,
-		Payload:                      msg.Payload,
-		Key:                          msg.Key,
-		EventType:                    msg.EventType,
-		SchemaVersion:                msg.SchemaVersion,
-		AggregateVersion:             msg.AggregateVersion,
-		Metadata:                     msg.Metadata,
-		TransactionalID:              msg.TransactionalID,
-		TransactionState:             msg.TransactionState,
-		TransactionMarker:            msg.TransactionMarker,
-		ControlBatchType:             msg.ControlBatchType,
-		ControlBatchVersion:          msg.ControlBatchVersion,
-		ControlBatchCoordinatorEpoch: msg.ControlBatchCoordinatorEpoch,
-		ControlBatchKey:              msg.ControlBatchKey,
-		ControlBatchValue:            msg.ControlBatchValue,
-	}
+	diskMsg := diskMessageFromMessage(topic, int32(partition), *msg)
 	if err := validateDiskMessageSize(diskMsg); err != nil {
 		return 0, err
 	}
