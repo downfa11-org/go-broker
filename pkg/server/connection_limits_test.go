@@ -8,7 +8,25 @@ import (
 
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/controller"
+	"github.com/stretchr/testify/require"
 )
+
+func TestIdleConnectionSurvivesReadDeadlinePoll(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ClientIdleTimeoutMS = 20000
+	handler := controller.NewCommandHandler(nil, cfg, nil, nil, nil)
+	defer func() { _ = handler.Close() }()
+	raw, connection, _, done := newAdmissionPeer(t, handler)
+	select {
+	case <-done:
+		t.Fatal("connection closed before its idle deadline")
+	case <-time.After(readDeadlinePoll + 100*time.Millisecond):
+	}
+	require.NoError(t, raw.SetDeadline(time.Now().Add(time.Second)))
+	require.NoError(t, connection.WriteFrame(admissionHelpFrame(t)))
+	_, err := connection.ReadFrame()
+	require.NoError(t, err)
+}
 
 func TestHandleConnWithContextClosesIdleConnection(t *testing.T) {
 	cfg := config.DefaultConfig()

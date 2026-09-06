@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"net"
 )
 
 const (
@@ -140,7 +141,11 @@ func (c *Codec) ReadFrameWithAdmission(reader io.Reader, admit FrameAdmission) (
 		return Frame{}, nil, fmt.Errorf("%w: nil codec", ErrInvalidFrame)
 	}
 	headerBytes := make([]byte, HeaderSize)
-	if _, err := io.ReadFull(reader, headerBytes); err != nil {
+	if received, err := io.ReadFull(reader, headerBytes); err != nil {
+		var timeout net.Error
+		if received == 0 && errors.As(err, &timeout) && timeout.Timeout() {
+			return Frame{}, nil, timeout
+		}
 		return Frame{}, nil, fmt.Errorf("read Wire v2 header: %w", err)
 	}
 	header, err := c.decodeHeader(headerBytes)
