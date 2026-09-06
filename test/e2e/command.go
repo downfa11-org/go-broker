@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -62,6 +63,10 @@ func (bc *BrokerClient) SendOffsetsToTransaction(transactionalID, topic, group, 
 
 func (bc *BrokerClient) EndTransaction(transactionalID string, producer TransactionProducer, result string) error {
 	_, err := bc.transactionCommand(fmt.Sprintf("END_TXN transactional_id=%s producerId=%s epoch=%d result=%s", transactionalID, producer.ProducerID, producer.Epoch, result))
+	var brokerErr *wire.BrokerError
+	if errors.As(err, &brokerErr) {
+		return fmt.Errorf("%w: reason=%q sync_reason=%q", err, brokerErr.Fields["reason"], brokerErr.Fields["sync_reason"])
+	}
 	return err
 }
 
