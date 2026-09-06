@@ -168,6 +168,12 @@ func (f *BrokerFSM) SetTransactionManager(txn *transaction.Manager) {
 	}
 }
 
+func (f *BrokerFSM) TransactionManager() *transaction.Manager {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.txn
+}
+
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	f.transitionMu.Lock()
 	defer f.transitionMu.Unlock()

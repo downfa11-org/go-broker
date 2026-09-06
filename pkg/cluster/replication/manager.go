@@ -19,6 +19,7 @@ import (
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/coordinator"
 	"github.com/cursus-io/cursus/pkg/topic"
+	"github.com/cursus-io/cursus/pkg/transaction"
 	"github.com/cursus-io/cursus/pkg/types"
 	"github.com/cursus-io/cursus/util"
 	"github.com/hashicorp/raft"
@@ -120,8 +121,14 @@ type RaftReplicationManager struct {
 	leaderCh chan bool
 }
 
-func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID string, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator, client client.TCPClusterClient) (*RaftReplicationManager, error) {
+func newReplayFSM(cfg *config.Config, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator) *fsm.BrokerFSM {
 	brokerFSM := fsm.NewBrokerFSM(topicManager, coordinator)
+	brokerFSM.SetTransactionManager(transaction.NewManagerWithExpiration(time.Duration(cfg.TransactionalIDExpirationMS) * time.Millisecond))
+	return brokerFSM
+}
+
+func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID string, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator, client client.TCPClusterClient) (*RaftReplicationManager, error) {
+	brokerFSM := newReplayFSM(cfg, topicManager, coordinator)
 
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
 	raftCfg, err := buildRaftConfig(cfg, brokerID)
