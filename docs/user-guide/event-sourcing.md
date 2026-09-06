@@ -12,7 +12,7 @@ Without broker-level support, applications must implement concurrency control, v
 
 ### Design Principles
 
-- **Reuse existing primitives.** Events are stored as regular messages in the append-only partition log and use partition replication, HWM, retention, and consumer groups. Retention can remove replay history, and the transaction command family does not automatically wrap `APPEND_STREAM`.
+- **Reuse existing primitives.** Events are stored as regular messages in the append-only partition log and use partition replication, HWM, and consumer groups. Event-sourcing topics preserve their complete history; the transaction command family does not automatically wrap `APPEND_STREAM`.
 - **Opt-in per topic.** The `event_sourcing=true` flag on CREATE enables event sourcing behavior. Non-event-sourcing topics are completely unaffected.
 - **Broker owns storage, SDK owns domain logic.** The broker handles versioning, indexing, and snapshots. Schema evolution (upcasting) is the SDK's responsibility.
 
@@ -33,6 +33,10 @@ OK topic=orders partitions=4
 ```
 
 The `event_sourcing=true` flag tells the broker to maintain a per-partition stream index for aggregate-level version tracking.
+
+Event-sourcing topics do not inherit broker retention limits. Positive topic retention limits and compaction are rejected because stream indexes require the complete event log. This applies before storage maintenance starts, including restart and partition growth. `cleanup_policy=delete` remains the metadata value but does not enable automatic event-history deletion.
+
+Plan storage capacity and alerts for an indefinitely growing event log. Application snapshots accelerate replay but do not authorize log deletion or replace the broker's version index. Before upgrading, remove explicit retention limits from event-sourcing topic definitions. Upgrade every cluster broker before relying on this protection; older brokers may still delete history. If earlier retention already removed log prefixes, restore the complete log from backup. Recovery errors stop stream operations instead of resetting aggregate versions. Administrative topic deletion and truncation remain explicitly destructive operations.
 
 ### 2. Append Events
 

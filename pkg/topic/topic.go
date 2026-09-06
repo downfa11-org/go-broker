@@ -128,7 +128,7 @@ func newTopicWithDefinition(definition Definition, hp HandlerProvider, cfg *conf
 
 	partitions := make([]*Partition, definition.Partitions)
 	for i := 0; i < definition.Partitions; i++ {
-		dh, err := getHandlerWithStoragePolicy(hp, definition.Name, i, definition.Policy)
+		dh, err := getHandlerWithStoragePolicy(hp, definition.Name, i, storagePolicyForTopic(definition.Policy, definition.EventSourcing))
 		if err != nil {
 			closePartiallyInitializedTopic(definition.Name, hp, partitions[:i])
 			return nil, fmt.Errorf("open handler for %s[%d]: %w", definition.Name, i, err)
@@ -280,7 +280,7 @@ func (t *Topic) applyFullDefinitionLocked(definition Definition, hp HandlerProvi
 
 	staged := make([]*Partition, 0, partitionCount-current)
 	for idx := current; idx < partitionCount; idx++ {
-		dh, err := getHandlerWithStoragePolicy(hp, t.Name, idx, policy)
+		dh, err := getHandlerWithStoragePolicy(hp, t.Name, idx, storagePolicyForTopic(policy, t.IsEventSourcing))
 		if err != nil {
 			closePreparedPartitions(t.Name, hp, staged)
 			return fmt.Errorf("failed to attach partition %d for topic '%s': %w", idx, t.Name, err)
@@ -302,7 +302,7 @@ func (t *Topic) applyFullDefinitionLocked(definition Definition, hp HandlerProvi
 	}
 
 	for _, partition := range t.Partitions {
-		applyStoragePolicy(partition.dh, policy)
+		applyStoragePolicy(partition.dh, storagePolicyForTopic(policy, t.IsEventSourcing))
 	}
 	t.Policy = policy
 	t.ReplicationFactor = definition.ReplicationFactor
@@ -335,7 +335,7 @@ func (t *Topic) ApplyPolicy(policy Policy) {
 
 	t.Policy = policy
 	for _, partition := range t.Partitions {
-		applyStoragePolicy(partition.dh, policy)
+		applyStoragePolicy(partition.dh, storagePolicyForTopic(policy, t.IsEventSourcing))
 	}
 }
 

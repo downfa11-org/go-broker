@@ -73,7 +73,7 @@ func (h *Handler) getIndex(topicName string, partitionID int) (*StreamIndex, err
 	idx, ok := h.indexes[key]
 	h.mu.RUnlock()
 	if ok {
-		return idx, nil
+		return idx, idx.recoveryError()
 	}
 
 	h.mu.Lock()
@@ -81,7 +81,7 @@ func (h *Handler) getIndex(topicName string, partitionID int) (*StreamIndex, err
 
 	// Double-check after acquiring write lock.
 	if idx, ok := h.indexes[key]; ok {
-		return idx, nil
+		return idx, idx.recoveryError()
 	}
 
 	dir := h.tm.GetLogDir(topicName, partitionID)
@@ -92,7 +92,8 @@ func (h *Handler) getIndex(topicName string, partitionID int) (*StreamIndex, err
 	if err != nil {
 		return nil, fmt.Errorf("open stream index for %s:%d: %w", topicName, partitionID, err)
 	}
-	if err := h.RecoverIndexFromLog(topicName, partitionID, idx); err != nil {
+	indexedThrough, err := h.recoverIndexFromLog(topicName, partitionID, idx)
+	if err != nil {
 		_ = idx.Close()
 		return nil, err
 	}
@@ -101,13 +102,8 @@ func (h *Handler) getIndex(topicName string, partitionID int) (*StreamIndex, err
 		_ = idx.Close()
 		return nil, fmt.Errorf("topic %s not found during stream index recovery", topicName)
 	}
-	p, err := t.GetPartition(partitionID)
-	if err != nil {
-		_ = idx.Close()
-		return nil, fmt.Errorf("partition lookup for stream index %s:%d: %w", topicName, partitionID, err)
-	}
 	h.indexes[key] = idx
-	h.indexedHWM[key] = p.GetHWM()
+	h.indexedHWM[key] = indexedThrough
 	return idx, nil
 }
 
@@ -223,52 +219,85 @@ func (h *Handler) IndexCommittedToHWM(topicName string, partitionID int, targetH
 }
 
 func (h *Handler) RecoverIndexFromLog(topicName string, partitionID int, idx *StreamIndex) error {
-	if err := idx.Reset(); err != nil {
-		return fmt.Errorf("reset stream index topic=%s partition=%d: %w", topicName, partitionID, err)
-	}
+	_, err := h.recoverIndexFromLog(topicName, partitionID, idx)
+	return err
+}
+
+func (h *Handler) recoverIndexFromLog(topicName string, partitionID int, idx *StreamIndex) (indexedThrough uint64, recoveryErr error) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	defer func() { idx.recoveryErr = recoveryErr }()
 	t := h.tm.GetTopic(topicName)
 	if t == nil || !t.IsEventSourcing {
-		return nil
+		return 0, fmt.Errorf("event-sourcing topic %s not found during index recovery", topicName)
 	}
 	p, err := t.GetPartition(partitionID)
 	if err != nil {
-		return fmt.Errorf("partition lookup for index recovery topic=%s partition=%d: %w", topicName, partitionID, err)
+		return 0, fmt.Errorf("partition lookup for index recovery topic=%s partition=%d: %w", topicName, partitionID, err)
 	}
-
-	latest := p.GetHWM()
+	if earliest := p.OffsetRange().Earliest; earliest != 0 {
+		return 0, fmt.Errorf("event history unavailable topic=%s partition=%d earliest=%d: restore the complete log before serving streams", topicName, partitionID, earliest)
+	}
+	if err := idx.resetLocked(); err != nil {
+		return 0, fmt.Errorf("reset stream index topic=%s partition=%d: %w", topicName, partitionID, err)
+	}
+	latest := p.LastStableOffset()
 	const batchSize = 256
 	for offset := uint64(0); offset < latest; {
 		msgs, err := p.ReadCommitted(offset, batchSize)
 		if err != nil {
-			if offset == 0 {
-				return nil
-			}
-			return fmt.Errorf("recover stream index from log offset=%d: %w", offset, err)
+			return 0, fmt.Errorf("recover stream index from log offset=%d: %w", offset, err)
 		}
 		if len(msgs) == 0 {
 			break
 		}
-		if err := h.indexMessages(idx, msgs); err != nil {
-			return err
+		bounded := msgs[:0]
+		for _, msg := range msgs {
+			if msg.Offset >= latest {
+				break
+			}
+			bounded = append(bounded, msg)
 		}
-		offset = msgs[len(msgs)-1].Offset + 1
+		if len(bounded) == 0 {
+			break
+		}
+		if err := h.indexMessagesLocked(idx, bounded); err != nil {
+			return 0, err
+		}
+		next := bounded[len(bounded)-1].Offset + 1
+		if next <= offset {
+			return 0, fmt.Errorf("stream index recovery did not advance from offset %d", offset)
+		}
+		offset = next
 	}
-	return nil
+	return latest, nil
 }
 
 func (h *Handler) indexMessages(idx *StreamIndex, messages []types.Message) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.recoveryErr != nil {
+		return idx.recoveryErr
+	}
+	return h.indexMessagesLocked(idx, messages)
+}
+
+func (h *Handler) indexMessagesLocked(idx *StreamIndex, messages []types.Message) error {
 	for _, msg := range messages {
 		if msg.Key == "" || msg.AggregateVersion == 0 {
 			continue
 		}
-		current := idx.GetVersion(msg.Key)
+		var current uint64
+		if state := idx.states[msg.Key]; state != nil {
+			current = state.currentVersion
+		}
 		switch {
 		case msg.AggregateVersion <= current:
 			continue
 		case msg.AggregateVersion != current+1:
 			return fmt.Errorf("stream index gap key=%s current=%d next=%d", msg.Key, current, msg.AggregateVersion)
 		}
-		if err := idx.Append(msg.Key, msg.AggregateVersion, msg.Offset, 0); err != nil {
+		if err := idx.appendLocked(msg.Key, msg.AggregateVersion, msg.Offset, 0); err != nil {
 			return err
 		}
 	}

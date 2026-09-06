@@ -20,14 +20,19 @@ import (
 // --- test helpers ---
 
 type fakeStorageHandler struct {
-	mu     sync.Mutex
-	msgs   []types.Message
-	offset uint64
+	mu          sync.Mutex
+	msgs        []types.Message
+	offset      uint64
+	firstOffset uint64
+	readErr     error
 }
 
 func (f *fakeStorageHandler) ReadMessages(off uint64, max int) ([]types.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
 	var result []types.Message
 	for _, m := range f.msgs {
 		if m.Offset >= off && len(result) < max {
@@ -38,7 +43,7 @@ func (f *fakeStorageHandler) ReadMessages(off uint64, max int) ([]types.Message,
 }
 
 func (f *fakeStorageHandler) GetAbsoluteOffset() uint64      { return f.offset }
-func (f *fakeStorageHandler) GetFirstOffset() uint64         { return 0 }
+func (f *fakeStorageHandler) GetFirstOffset() uint64         { return f.firstOffset }
 func (f *fakeStorageHandler) GetFlushedOffset() uint64       { return f.offset }
 func (f *fakeStorageHandler) GetLatestOffset() uint64        { return f.offset }
 func (f *fakeStorageHandler) GetSegmentPath(_ uint64) string { return "" }
