@@ -61,7 +61,7 @@ func TestFullPersistenceBackupRestore(t *testing.T) {
 			require.NoError(t, events.CreateTopic(1))
 			fixture.waitTopic(t, "backup-events")
 			for version := uint64(1); version <= 3; version++ {
-				_, err := events.Append("order", version, &sdk.Event{Type: "Changed", Payload: fmt.Sprintf("event-%d", version)})
+				_, err := events.Append("order", version-1, &sdk.Event{Type: "Changed", Payload: fmt.Sprintf("event-%d", version)})
 				require.NoError(t, err)
 			}
 			require.NoError(t, events.SaveSnapshot("order", 2, "snapshot-2"))
@@ -109,7 +109,7 @@ func TestFullPersistenceBackupRestore(t *testing.T) {
 			require.Equal(t, &sdk.Snapshot{Version: 2, Payload: "snapshot-2"}, data.Snapshot)
 			require.NotEmpty(t, data.Events)
 			require.Equal(t, "event-3", data.Events[len(data.Events)-1].Payload)
-			appended, err := recoveredEvents.Append("order", 4, &sdk.Event{Type: "Changed", Payload: "event-4"})
+			appended, err := recoveredEvents.Append("order", 3, &sdk.Event{Type: "Changed", Payload: "event-4"})
 			require.NoError(t, err)
 			require.Equal(t, uint64(4), appended.Version)
 		})
