@@ -87,6 +87,8 @@ type DiskHandler struct {
 	writer *bufio.Writer
 
 	closeOnce sync.Once
+	closeErr  error
+	drainErr  error
 	shutdown  sync.WaitGroup
 }
 

@@ -157,13 +157,14 @@ func startHealthCheckServerAddress(addr string, state *HealthState) (*http.Serve
 	return server, nil
 }
 
-func shutdownHTTPServer(server *http.Server) {
+func shutdownHTTPServer(server *http.Server) error {
 	if server == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		util.Warn("HTTP server shutdown failed: %v", err)
+		return errors.Join(fmt.Errorf("HTTP server shutdown: %w", err), server.Close())
 	}
+	return nil
 }

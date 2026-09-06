@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,6 +66,7 @@ func TestRunBrokerUsesDiagnosticsWhenConsumerMetadataRecoveryFails(t *testing.T)
 		t.Fatal(err)
 	}
 	seedCoordinator.Stop()
+	seedTM.Stop()
 	seedDM.CloseAllHandlers()
 
 	originalTopicDiagnostics := runTopicMetadataDiagnostics
@@ -130,5 +132,27 @@ func TestRunBrokerStartsMainServerAfterSuccessfulTopicRestore(t *testing.T) {
 	}
 	if diagnosticsCalled || !serverCalled {
 		t.Fatalf("diagnosticsCalled=%t serverCalled=%t", diagnosticsCalled, serverCalled)
+	}
+}
+
+func TestRunBrokerPreservesStorageCloseFailureWithCancellation(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.LogDir = t.TempDir()
+	cfg.EnabledDistribution = false
+	originalServer := runServerContext
+	t.Cleanup(func() { runServerContext = originalServer })
+	runServerContext = func(_ context.Context, _ *config.Config, _ *topic.TopicManager, dm *disk.DiskManager, _ *coordinator.Coordinator, _ *stream.StreamManager) error {
+		handler, err := dm.GetHandler("close-failure", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := handler.(*disk.DiskHandler).GetIndexFile().Close(); err != nil {
+			t.Fatal(err)
+		}
+		return context.Canceled
+	}
+	err := runBroker(context.Background(), cfg)
+	if !errors.Is(err, context.Canceled) || onlyCancellation(err) {
+		t.Fatalf("expected cancellation joined with storage close error, got %v", err)
 	}
 }

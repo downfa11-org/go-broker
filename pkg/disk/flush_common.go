@@ -3,6 +3,7 @@ package disk
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -538,6 +539,8 @@ func (d *DiskHandler) GetCurrentSegment() uint64 {
 }
 
 func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
+	var errs []error
+	defer func() { d.drainErr = errors.Join(errs...) }()
 	for {
 		stop := false
 		select {
@@ -553,6 +556,7 @@ func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
 
 		if len(batch) >= d.batchSize {
 			if err := d.WriteBatch(batch); err != nil {
+				errs = append(errs, fmt.Errorf("drain batch: %w", err))
 				util.Error("WriteBatch failed: %v", err)
 			}
 			batch = batch[:0]
@@ -565,6 +569,7 @@ func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
 
 	if len(batch) > 0 {
 		if err := d.WriteBatch(batch); err != nil {
+			errs = append(errs, fmt.Errorf("final batch: %w", err))
 			util.Error("finalize WriteBatch failed: %v", err)
 		}
 	}
@@ -574,22 +579,26 @@ func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
 
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("final writer flush: %w", err))
 			util.Error("writer flush failed: %v", err)
 		}
 		d.writer = nil
 	}
 
 	if d.file != nil {
-		if err := d.file.Sync(); err != nil {
+		if err := d.syncFile(d.file); err != nil {
+			errs = append(errs, fmt.Errorf("final file sync: %w", err))
 			util.Error("file sync failed: %v", err)
 		}
 		if err := d.file.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("final file close: %w", err))
 			util.Error("file close failed: %v", err)
 		}
 		d.file = nil
 	}
 
 	if err := d.closeIndexFiles(); err != nil {
+		errs = append(errs, fmt.Errorf("final index close: %w", err))
 		util.Error("close index files failed during shutdown: %v", err)
 	}
 }

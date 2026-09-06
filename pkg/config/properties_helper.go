@@ -12,6 +12,8 @@ import (
 
 const DefaultMaxInFlightRequests = 32
 const DefaultMaxRequestBytes = 128 << 20
+const DefaultShutdownTimeoutMS = 30000
+const MaxShutdownTimeoutMS = 600000
 
 func (cfg *Config) Normalize() {
 	if cfg.BrokerPort <= 0 {
@@ -142,6 +144,9 @@ func (cfg *Config) Normalize() {
 	}
 	if cfg.ClientIdleTimeoutMS <= 0 {
 		cfg.ClientIdleTimeoutMS = 60000
+	}
+	if cfg.ShutdownTimeoutMS <= 0 || cfg.ShutdownTimeoutMS > MaxShutdownTimeoutMS {
+		cfg.ShutdownTimeoutMS = DefaultShutdownTimeoutMS
 	}
 	if cfg.MaxInFlightRequests <= 0 {
 		cfg.MaxInFlightRequests = DefaultMaxInFlightRequests

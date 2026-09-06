@@ -45,7 +45,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // RunServerContext starts the broker and shuts it down when ctx is canceled.
-func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) error {
+func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) (runErr error) {
 	if ctx == nil {
 		return fmt.Errorf("server context must not be nil")
 	}
@@ -87,7 +87,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 		}
 		if rm != nil {
 			if shutdownErr := rm.Shutdown(); shutdownErr != nil {
-				util.Error("raft shutdown failed: %v", shutdownErr)
+				runErr = errors.Join(runErr, fmt.Errorf("raft shutdown: %w", shutdownErr))
 			}
 		}
 	}()
@@ -198,7 +198,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 	globalCH := controller.NewCommandHandler(tm, cfg, cd, sm, cc)
 	defer func() {
 		if err := globalCH.Close(); err != nil {
-			util.Error("Failed to close command handler: %v", err)
+			runErr = errors.Join(runErr, fmt.Errorf("close command handler: %w", err))
 		}
 	}()
 	if !cfg.EnabledDistribution {
@@ -254,7 +254,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 		if startErr != nil {
 			return fmt.Errorf("start metrics exporter: %w", startErr)
 		}
-		defer shutdownHTTPServer(metricsServer)
+		defer func() { runErr = errors.Join(runErr, shutdownHTTPServer(metricsServer)) }()
 		util.Info("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
 	} else {
 		util.Info("📉 Exporter disabled")
@@ -268,7 +268,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 	if healthErr != nil {
 		return fmt.Errorf("start health server: %w", healthErr)
 	}
-	defer shutdownHTTPServer(healthServer)
+	defer func() { runErr = errors.Join(runErr, shutdownHTTPServer(healthServer)) }()
 
 	workerCount := maxClientConnections(cfg)
 	workerCh := make(chan net.Conn, workerCount)

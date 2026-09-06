@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/cursus-io/cursus/pkg/config"
@@ -48,7 +49,7 @@ func RunConsumerMetadataDiagnostics(ctx context.Context, cfg *config.Config, tm 
 	return runRecoveryDiagnostics(ctx, cfg, tm, dm, cd, true)
 }
 
-func runRecoveryDiagnostics(ctx context.Context, cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, includeCoordinator bool) error {
+func runRecoveryDiagnostics(ctx context.Context, cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, includeCoordinator bool) (runErr error) {
 	if ctx == nil {
 		return fmt.Errorf("diagnostics context must not be nil")
 	}
@@ -72,7 +73,7 @@ func runRecoveryDiagnostics(ctx context.Context, cfg *config.Config, tm *topic.T
 		if err != nil {
 			return fmt.Errorf("start diagnostics metrics exporter: %w", err)
 		}
-		defer shutdownHTTPServer(metricsServer)
+		defer func() { runErr = errors.Join(runErr, shutdownHTTPServer(metricsServer)) }()
 	}
 
 	healthPort := cfg.HealthCheckPort
@@ -83,7 +84,7 @@ func runRecoveryDiagnostics(ctx context.Context, cfg *config.Config, tm *topic.T
 	if err != nil {
 		return fmt.Errorf("start diagnostics health server: %w", err)
 	}
-	defer shutdownHTTPServer(healthServer)
+	defer func() { runErr = errors.Join(runErr, shutdownHTTPServer(healthServer)) }()
 
 	<-ctx.Done()
 	state.SetReady(false)

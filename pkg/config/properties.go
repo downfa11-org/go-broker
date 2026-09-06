@@ -99,6 +99,7 @@ type Config struct {
 	// network
 	MaxClientConnections        int `yaml:"max_client_connections" json:"max.client.connections"`
 	ClientIdleTimeoutMS         int `yaml:"client_idle_timeout_ms" json:"client.idle.timeout.ms"`
+	ShutdownTimeoutMS           int `yaml:"shutdown_timeout_ms" json:"shutdown.timeout.ms"`
 	MaxInFlightRequests         int `yaml:"max_inflight_requests" json:"max.inflight.requests"`
 	MaxRequestBytes             int `yaml:"max_request_bytes" json:"max.request.bytes"`
 	MaxInternalInFlightRequests int `yaml:"max_internal_inflight_requests" json:"max.internal.inflight.requests"`
@@ -191,6 +192,7 @@ func DefaultConfig() *Config {
 			// network
 			MaxClientConnections:        1000,
 			ClientIdleTimeoutMS:         60000,
+			ShutdownTimeoutMS:           DefaultShutdownTimeoutMS,
 			MaxInFlightRequests:         DefaultMaxInFlightRequests,
 			MaxRequestBytes:             DefaultMaxRequestBytes,
 			MaxInternalInFlightRequests: DefaultMaxInFlightRequests,
@@ -295,6 +297,7 @@ func LoadConfig() (*Config, error) {
 	flag.IntVar(&cfg.ConsumerHeartbeatCheckMS, "consumer-heartbeat-check", cfg.ConsumerHeartbeatCheckMS, "Heartbeat check")
 	flag.IntVar(&cfg.MaxClientConnections, "max-client-connections", cfg.MaxClientConnections, "Maximum concurrently serviced client connections")
 	flag.IntVar(&cfg.ClientIdleTimeoutMS, "client-idle-timeout-ms", cfg.ClientIdleTimeoutMS, "Idle client connection timeout in milliseconds")
+	flag.IntVar(&cfg.ShutdownTimeoutMS, "shutdown-timeout-ms", cfg.ShutdownTimeoutMS, "Maximum signal-triggered broker shutdown time in milliseconds")
 	flag.IntVar(&cfg.MaxInFlightRequests, "max-inflight-requests", cfg.MaxInFlightRequests, "Maximum concurrently admitted client requests")
 	flag.IntVar(&cfg.MaxRequestBytes, "max-request-bytes", cfg.MaxRequestBytes, "Total encoded plus decoded client request byte budget")
 	flag.IntVar(&cfg.MaxInternalInFlightRequests, "max-internal-inflight-requests", cfg.MaxInternalInFlightRequests, "Maximum concurrently admitted internal requests")
@@ -409,6 +412,7 @@ func LoadConfig() (*Config, error) {
 	overrideEnvInt(&cfg.BroadcastChannelBufferSize, "BROADCAST_CH_BUFFER")
 	overrideEnvInt(&cfg.MaxClientConnections, "MAX_CLIENT_CONNECTIONS")
 	overrideEnvInt(&cfg.ClientIdleTimeoutMS, "CLIENT_IDLE_TIMEOUT_MS")
+	overrideEnvInt(&cfg.ShutdownTimeoutMS, "SHUTDOWN_TIMEOUT_MS")
 	overrideEnvInt(&cfg.MaxInFlightRequests, "MAX_INFLIGHT_REQUESTS")
 	overrideEnvInt(&cfg.MaxRequestBytes, "MAX_REQUEST_BYTES")
 	overrideEnvInt(&cfg.MaxInternalInFlightRequests, "MAX_INTERNAL_INFLIGHT_REQUESTS")
