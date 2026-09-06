@@ -14,7 +14,7 @@ func (ch *CommandHandler) prepareTransaction(current *transaction.Transaction) (
 		if ch.Cluster.RaftManager == nil || ch.Cluster.RaftManager.GetFSM() == nil {
 			return nil, fmt.Errorf("transaction prepare requires cluster metadata")
 		}
-		if err := ch.Cluster.RaftManager.GetFSM().PreparedTransactionRecoveryReady(); err != nil {
+		if err := waitForPreparedTransactionTopology(ch.Cluster.RaftManager.GetFSM().PreparedTransactionRecoveryReady, DefaultFSMApplyTimeout); err != nil {
 			return nil, err
 		}
 	}
@@ -68,6 +68,24 @@ func (ch *CommandHandler) prepareTransaction(current *transaction.Transaction) (
 		return nil, err
 	}
 	return ch.waitForPreparedTransaction(snap)
+}
+
+func waitForPreparedTransactionTopology(ready func() error, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := ready()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-timer.C:
+			return err
+		case <-ticker.C:
+		}
+	}
 }
 
 func (ch *CommandHandler) waitForPreparedTransaction(snap *transaction.Snapshot) (*transaction.Transaction, error) {
