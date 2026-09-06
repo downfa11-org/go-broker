@@ -3,6 +3,7 @@ package e2e_cluster
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/cursus-io/cursus/pkg/cluster/replication/fsm"
 	"github.com/cursus-io/cursus/pkg/config"
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/sdk"
 	"github.com/cursus-io/cursus/test/e2e"
 	"github.com/stretchr/testify/require"
@@ -91,7 +93,12 @@ func TestFullPersistenceBackupRestore(t *testing.T) {
 				offset, err := restored.FetchCommittedOffset(topic, partition, group)
 				require.NoError(t, err)
 				require.Equal(t, uint64(11), offset)
-				require.NoError(t, restored.PublishIdempotentToPartition(topic, "backup-producer", partition, 10, 1, fmt.Sprintf("p%d-10", partition), "all", true))
+				err = restored.PublishIdempotentToPartition(topic, "backup-producer", partition, 10, 1, fmt.Sprintf("p%d-10", partition), "all", true)
+				var brokerErr *wire.BrokerError
+				if errors.As(err, &brokerErr) {
+					t.Fatalf("duplicate retry partition=%d: code=%s message=%s fields=%v", partition, brokerErr.Code, brokerErr.Message, brokerErr.Fields)
+				}
+				require.NoError(t, err)
 				messages := consumeFromPartitionLeader(t, fixture.addrs, topic, partition, "backup-readback", readMember, readGeneration)
 				expected := make([]string, 0, 11)
 				for sequence := 1; sequence <= 10; sequence++ {
