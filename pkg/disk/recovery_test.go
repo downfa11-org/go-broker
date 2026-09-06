@@ -202,7 +202,7 @@ func TestReadMessagesRejectsCorruptClosedSegment(t *testing.T) {
 	cfg.SegmentSize = 700
 	handler, err := NewDiskHandler(cfg, "orders", 0)
 	require.NoError(t, err)
-	defer func() { require.NoError(t, handler.Close()) }()
+	t.Cleanup(func() { _ = handler.Close() })
 	appendRecoveryMessages(t, handler, 0, 12, 120)
 	require.GreaterOrEqual(t, len(handler.segments), 2)
 
@@ -217,6 +217,7 @@ func TestReadMessagesRejectsCorruptClosedSegment(t *testing.T) {
 
 	_, err = handler.ReadMessages(handler.segments[0], 1)
 	require.ErrorContains(t, err, "decode message")
+	require.ErrorContains(t, handler.Close(), "decode message")
 }
 
 func TestOpenIndexFilesDiscardsInvalidSuffix(t *testing.T) {

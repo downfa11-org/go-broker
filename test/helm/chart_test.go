@@ -80,6 +80,7 @@ func TestHelmStandaloneAndClusterContracts(t *testing.T) {
 	require.True(t, cfg.EnabledDistribution)
 	require.True(t, cfg.InternalUseTLS)
 	require.True(t, cfg.EnableExporter)
+	require.Equal(t, 30000, cfg.ShutdownTimeoutMS)
 	require.Equal(t, 16, cfg.MaxInFlightRequests)
 	require.Equal(t, 64<<20, cfg.MaxRequestBytes)
 	require.Equal(t, 32, cfg.MaxInternalInFlightRequests)
@@ -96,6 +97,8 @@ func TestHelmStandaloneAndClusterContracts(t *testing.T) {
 func TestHelmRejectsUnsafeOverrides(t *testing.T) {
 	for _, overrides := range [][]string{
 		{"replicaCount=2"}, {"mode=unknown"}, {"mode=cluster", "replicaCount=1"},
+		{"shutdownTimeoutMS=0"}, {"shutdownTimeoutMS=600001"},
+		{"terminationGracePeriodSeconds=60", "shutdownTimeoutMS=56000"},
 		{"mode=cluster", "replicaCount=3"}, {"production=true"},
 		{"authentication.enabled=true", "authentication.secretName=users"},
 		{"limits.maxClientConnections=0"}, {"service.port=9080"},
@@ -106,6 +109,17 @@ func TestHelmRejectsUnsafeOverrides(t *testing.T) {
 	} {
 		t.Run(strings.Join(overrides, "_"), func(t *testing.T) { _, err := render(t, overrides...); require.Error(t, err) })
 	}
+}
+
+func TestHelmShutdownBudget(t *testing.T) {
+	documents, err := render(t, "terminationGracePeriodSeconds=120", "shutdownTimeoutMS=90000")
+	require.NoError(t, err)
+	spec := findKind(t, documents, "Deployment")["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	require.Equal(t, 120, spec["terminationGracePeriodSeconds"])
+	data := findKind(t, documents, "ConfigMap")["data"].(map[string]any)["config.yaml"].(string)
+	cfg := config.DefaultConfig()
+	require.NoError(t, yaml.Unmarshal([]byte(data), cfg))
+	require.Equal(t, 90000, cfg.ShutdownTimeoutMS)
 }
 
 func TestHelmProductionUsesOnlySecretReferences(t *testing.T) {

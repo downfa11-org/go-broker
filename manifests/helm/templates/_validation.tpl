@@ -45,6 +45,8 @@
 {{- $_ := set $ports $key true }}
 {{- end }}
 {{- if or (lt (int .Values.terminationGracePeriodSeconds) 60) (lt (int .Values.startupProbeFailureThreshold) 30) }}{{ fail "shutdown grace must be at least 60 seconds and startup threshold at least 30" }}{{ end }}
+{{- if or (lt (int .Values.shutdownTimeoutMS) 1) (gt (int .Values.shutdownTimeoutMS) 600000) }}{{ fail "shutdownTimeoutMS must be between 1 and 600000" }}{{ end }}
+{{- if lt (mul (int .Values.terminationGracePeriodSeconds) 1000) (add (int .Values.shutdownTimeoutMS) 5000) }}{{ fail "termination grace must exceed the broker shutdown timeout by at least 5 seconds" }}{{ end }}
 {{- if or (lt (int .Values.limits.maxClientConnections) 1) (lt (int .Values.limits.maxStreamConnections) 1) (lt (int .Values.limits.clientIdleTimeoutMS) 1) }}{{ fail "connection limits and idle timeout must be positive" }}{{ end }}
 {{- range list .Values.limits.maxInFlightRequests .Values.limits.maxRequestBytes .Values.limits.maxInternalInFlightRequests .Values.limits.maxInternalRequestBytes }}
 {{- if lt (int .) 1 }}{{ fail "request admission limits must be positive" }}{{ end }}

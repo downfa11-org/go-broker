@@ -1,6 +1,7 @@
 replicaCount: 1
 mode: standalone
 production: false
+shutdownTimeoutMS: 30000
 networkPolicy:
   enabled: false
   clientPodSelector:

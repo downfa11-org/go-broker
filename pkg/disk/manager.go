@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,8 @@ type DiskManager struct {
 	mu       sync.Mutex
 	handlers map[string]*DiskHandler
 	cfg      *config.Config
+	closed   bool
+	closeErr error
 }
 
 func NewDiskManager(cfg *config.Config) *DiskManager {
@@ -67,6 +70,9 @@ func (dm *DiskManager) GetHandlerWithPolicy(topic string, partitionID int, clean
 }
 
 func (dm *DiskManager) getHandlerLocked(topic string, partitionID int, policy *initialStoragePolicy) (types.StorageHandler, error) {
+	if dm.closed {
+		return nil, fmt.Errorf("disk manager is closed")
+	}
 	key := diskHandlerKey(topic, partitionID)
 	if handler, ok := dm.handlers[key]; ok {
 		return handler, nil
@@ -135,14 +141,27 @@ func (dm *DiskManager) RemoveTopicStorage(path string) error {
 	return os.RemoveAll(path)
 }
 
-// CloseAllHandlers should be implemented to ensure all DiskHandlers are closed properly
+// CloseAllHandlers evicts handlers while keeping the manager reusable.
 func (dm *DiskManager) CloseAllHandlers() {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
+	dm.closeAllHandlersLocked()
+}
 
+// Close stops the manager permanently and returns retained storage close errors.
+func (dm *DiskManager) Close() error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.closed = true
+	dm.closeAllHandlersLocked()
+	return dm.closeErr
+}
+
+func (dm *DiskManager) closeAllHandlersLocked() {
 	for name, dh := range dm.handlers {
 		util.Debug("Closing DiskHandler for %s", name)
 		if err := dh.Close(); err != nil {
+			dm.closeErr = errors.Join(dm.closeErr, fmt.Errorf("close storage %s: %w", name, err))
 			util.Warn("Failed to close DiskHandler for %s: %v", name, err)
 		}
 		delete(dm.handlers, name)
@@ -161,6 +180,7 @@ func (dm *DiskManager) CloseTopicHandlers(topic string) {
 		}
 		util.Debug("Closing DiskHandler for %s", name)
 		if err := dh.Close(); err != nil {
+			dm.closeErr = errors.Join(dm.closeErr, fmt.Errorf("close storage %s: %w", name, err))
 			util.Warn("Failed to close DiskHandler for %s: %v", name, err)
 		}
 		delete(dm.handlers, name)
@@ -178,6 +198,7 @@ func (dm *DiskManager) ClosePartitionHandler(topic string, partitionID int) {
 		return
 	}
 	if err := handler.Close(); err != nil {
+		dm.closeErr = errors.Join(dm.closeErr, fmt.Errorf("close storage %s: %w", key, err))
 		util.Warn("Failed to close DiskHandler for %s: %v", key, err)
 	}
 	delete(dm.handlers, key)

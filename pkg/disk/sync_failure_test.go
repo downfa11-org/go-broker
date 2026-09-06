@@ -19,15 +19,16 @@ func TestSyncFailureMakesHandlerTerminalUntilRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	syncFailure := errors.New("injected fsync failure")
 	t.Cleanup(func() {
 		handler.syncFileFn = nil
-		if closeErr := handler.Close(); closeErr != nil {
-			t.Errorf("close handler: %v", closeErr)
+		if closeErr := handler.Close(); !errors.Is(closeErr, syncFailure) {
+			t.Errorf("close handler = %v, want terminal sync failure", closeErr)
 		}
 	})
 
 	handler.syncFileFn = func(*os.File) error {
-		return errors.New("injected fsync failure")
+		return syncFailure
 	}
 	if _, err := handler.AppendMessageSync("orders", 0, &types.Message{Payload: "first"}); err == nil {
 		t.Fatal("expected first append to report sync failure")

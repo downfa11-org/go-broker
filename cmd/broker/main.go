@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/coordinator"
@@ -48,14 +50,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := runBroker(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
-		util.Fatal("❌ Broker failed: %v", err)
-	}
+	superviseShutdown(ctx, time.Duration(cfg.ShutdownTimeoutMS)*time.Millisecond, os.Exit, func() {
+		if err := runBroker(ctx, cfg); err != nil && !onlyCancellation(err) {
+			util.Fatal("❌ Broker failed: %v", err)
+		}
+	})
 }
 
-func runBroker(ctx context.Context, cfg *config.Config) error {
+func runBroker(ctx context.Context, cfg *config.Config) (runErr error) {
 	dm := disk.NewDiskManager(cfg)
-	defer dm.CloseAllHandlers()
+	defer func() { runErr = errors.Join(runErr, dm.Close()) }()
 	sm := stream.NewStreamManager(cfg.MaxStreamConnections, cfg.StreamTimeout)
 	smAdapter, err := topic.NewStreamManagerAdapter(sm)
 	if err != nil {
@@ -64,7 +68,7 @@ func runBroker(ctx context.Context, cfg *config.Config) error {
 
 	storageProvider, err := newStorageProvider(dm, cfg.LogDir)
 	if err != nil {
-		util.Fatal("Failed to configure storage provider: %v", err)
+		return fmt.Errorf("configure storage provider: %w", err)
 	}
 
 	tm := topic.NewTopicManager(cfg, storageProvider, smAdapter)

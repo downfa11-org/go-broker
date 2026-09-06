@@ -216,10 +216,13 @@ These values participate in active broker behavior:
 | `advertised_client_host` | empty | Client-facing host returned by routing metadata. |
 | `max_client_connections` | 1000 | Concurrent client connection limit. |
 | `client_idle_timeout_ms` | 60000 | Idle client connection deadline. |
+| `shutdown_timeout_ms` | 30000 | Process shutdown budget after SIGINT/SIGTERM, in milliseconds (1–600000). |
 | `max_stream_connections` | 1000 | Concurrent streaming connection limit. |
 | `stream_timeout` | 30m | Maximum broker stream lifetime as a Go duration string. |
 | `consumer_session_timeout_ms` | 10000 | Group member session timeout. |
 | `consumer_heartbeat_check_ms` | 5000 | Broker interval for detecting expired members; normalized below the session timeout. |
+
+The broker executable starts a shutdown watchdog on SIGINT/SIGTERM. Configure it with `shutdown_timeout_ms` (JSON: `shutdown.timeout.ms`), `--shutdown-timeout-ms`, or `SHUTDOWN_TIMEOUT_MS`. Invalid values normalize to 30000 ms. If cleanup stalls beyond this budget, the watchdog exits with status 1; this does **not** mean pending writes were flushed. Storage close failures also produce unsuccessful exit even when joined with cancellation. Treat timed-out requests as uncertain and rely on durable recovery after restart. The watchdog is process-level, not a cancellation guarantee for filesystem calls or embedded library callers; it requires the OS to schedule the process. Startup failure cleanup without a signal does not start this deadline.
 | `enable_idempotence` | false | Broker default for producer idempotence; topic/request contracts can enable it explicitly. |
 
 Distribution is disabled by default. Production clusters should use a dedicated internal listener, mTLS, least-privilege client users, and explicit advertised addresses.

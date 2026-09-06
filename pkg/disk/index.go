@@ -3,6 +3,7 @@ package disk
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -244,12 +245,12 @@ func (d *DiskHandler) closeIndexFiles() error {
 
 	if d.indexWriter != nil {
 		if err := d.indexWriter.Flush(); err != nil {
-			return fmt.Errorf("flush index writer failed: %w", err)
+			errs = append(errs, fmt.Errorf("flush index writer failed: %w", err))
 		}
 	}
 	if d.indexFile != nil {
 		if err := d.indexFile.Sync(); err != nil {
-			return fmt.Errorf("sync index file failed: %w", err)
+			errs = append(errs, fmt.Errorf("sync index file failed: %w", err))
 		}
 	}
 
@@ -268,10 +269,7 @@ func (d *DiskHandler) closeIndexFiles() error {
 	}
 	d.indexWriter = nil
 
-	if len(errs) > 0 {
-		return fmt.Errorf("closeIndexFiles errors: %v", errs)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // findSegmentForOffset finds which segment contains the given offset

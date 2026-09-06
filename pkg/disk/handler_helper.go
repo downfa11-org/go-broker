@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -49,14 +50,17 @@ func (d *DiskHandler) CloseIndexFiles() error {
 
 // Close signals the flushLoop to terminate and cleans up resources.
 func (d *DiskHandler) Close() error {
-	var errs []error
-
 	d.closeOnce.Do(func() {
+		var errs []error
 		close(d.done)
 		d.shutdown.Wait()
+		errs = append(errs, d.drainErr)
 
 		d.ioMu.Lock()
 		defer d.ioMu.Unlock()
+		if err := d.writeAvailabilityError(); err != nil {
+			errs = append(errs, err)
+		}
 
 		if d.writer != nil {
 			if err := d.writer.Flush(); err != nil {
@@ -65,7 +69,7 @@ func (d *DiskHandler) Close() error {
 		}
 
 		if d.file != nil {
-			if err := d.file.Sync(); err != nil {
+			if err := d.syncFile(d.file); err != nil {
 				errs = append(errs, fmt.Errorf("data file sync error: %w", err))
 			}
 			if err := d.file.Close(); err != nil {
@@ -83,10 +87,7 @@ func (d *DiskHandler) Close() error {
 		if err := d.segmentReaders.close(); err != nil {
 			errs = append(errs, fmt.Errorf("segment reader cache cleanup error: %w", err))
 		}
+		d.closeErr = errors.Join(errs...)
 	})
-
-	if len(errs) > 0 {
-		return fmt.Errorf("DiskHandler close failures: %v", errs)
-	}
-	return nil
+	return d.closeErr
 }

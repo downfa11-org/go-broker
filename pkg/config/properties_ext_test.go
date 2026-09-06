@@ -29,6 +29,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestLoadConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("BROKER_PORT", "9999")
+	t.Setenv("SHUTDOWN_TIMEOUT_MS", "12345")
 	t.Setenv("LOG_RETENTION_HOURS", "24")
 	t.Setenv("RAFT_SNAPSHOT_INTERVAL_MS", "250")
 	t.Setenv("RAFT_SNAPSHOT_THRESHOLD", "16")
@@ -47,6 +48,7 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 		t.Errorf("Expected BrokerPort 9999 from env, got %d", cfg.BrokerPort)
 	}
 	require.Equal(t, 3, cfg.MaxInFlightRequests)
+	require.Equal(t, 12345, cfg.ShutdownTimeoutMS)
 	require.Equal(t, 4096, cfg.MaxRequestBytes)
 	require.Equal(t, 5, cfg.MaxInternalInFlightRequests)
 	require.Equal(t, 8192, cfg.MaxInternalRequestBytes)
@@ -93,5 +95,18 @@ func TestConfig_Normalize(t *testing.T) {
 	cfg.Normalize()
 	if cfg.BrokerPort != 9000 {
 		t.Errorf("Normalize should have reset BrokerPort to 9000, got %d", cfg.BrokerPort)
+	}
+}
+
+func TestShutdownTimeoutNormalization(t *testing.T) {
+	for _, value := range []int{-1, 0, 1, 30000, 600000, 600001} {
+		cfg := config.DefaultConfig()
+		cfg.ShutdownTimeoutMS = value
+		cfg.Normalize()
+		want := value
+		if value < 1 || value > config.MaxShutdownTimeoutMS {
+			want = config.DefaultShutdownTimeoutMS
+		}
+		require.Equal(t, want, cfg.ShutdownTimeoutMS)
 	}
 }
