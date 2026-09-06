@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"sync"
 
 	"github.com/cursus-io/cursus/pkg/types"
@@ -147,11 +148,15 @@ var diskMsgBufPool = sync.Pool{
 	},
 }
 
-const diskMessageMagic = "CDM2"
+const diskMessageMagic = "CDM3"
+const legacyDiskMessageMagic = "CDM2"
+
+var ErrDiskRecordChecksum = errors.New("disk record checksum mismatch")
+var diskChecksumTable = crc32.MakeTable(crc32.Castagnoli)
 
 // EstimateDiskMessageSize returns the serialized size of a DiskMessage without allocating.
 func EstimateDiskMessageSize(msg types.DiskMessage) int {
-	return len(diskMessageMagic) + 2 + len(msg.Topic) + 4 + 8 + 2 + len(msg.ProducerID) + 8 + 8 +
+	return len(diskMessageMagic) + 4 + 2 + len(msg.Topic) + 4 + 8 + 2 + len(msg.ProducerID) + 8 + 8 +
 		4 + len(msg.Payload) + 2 + len(msg.Key) +
 		2 + len(msg.EventType) + 4 + 8 + 2 + len(msg.Metadata) + 2 + len(msg.TransactionalID) + 2 + len(msg.TransactionState) + 2 + len(msg.TransactionMarker) + 2 + len(msg.ControlBatchType) + 2 + 8 + 2 + len(msg.ControlBatchKey) + 2 + len(msg.ControlBatchValue)
 }
@@ -316,6 +321,8 @@ func SerializeDiskMessage(msg types.DiskMessage) ([]byte, error) {
 	binary.BigEndian.PutUint16(tmp[:2], controlBatchValueLen)
 	buf = append(buf, tmp[:2]...)
 	buf = append(buf, msg.ControlBatchValue...)
+	binary.BigEndian.PutUint32(tmp[:4], crc32.Checksum(buf, diskChecksumTable))
+	buf = append(buf, tmp[:4]...)
 
 	// Return a copy so the pooled buffer can be reused
 	result := make([]byte, len(buf))
@@ -329,7 +336,21 @@ func SerializeDiskMessage(msg types.DiskMessage) ([]byte, error) {
 // DeserializeDiskMessage deserializes bytes back to DiskMessage
 func DeserializeDiskMessage(data []byte) (types.DiskMessage, error) {
 	var msg types.DiskMessage
-	if len(data) < len(diskMessageMagic) || string(data[:len(diskMessageMagic)]) != diskMessageMagic {
+	if len(data) < len(diskMessageMagic) {
+		return msg, fmt.Errorf("unsupported disk message format: clean bootstrap required")
+	}
+	switch string(data[:len(diskMessageMagic)]) {
+	case diskMessageMagic:
+		if len(data) < len(diskMessageMagic)+4 {
+			return msg, fmt.Errorf("%w: incomplete record", ErrDiskRecordChecksum)
+		}
+		body := data[:len(data)-4]
+		if crc32.Checksum(body, diskChecksumTable) != binary.BigEndian.Uint32(data[len(data)-4:]) {
+			return msg, ErrDiskRecordChecksum
+		}
+		data = body
+	case legacyDiskMessageMagic:
+	default:
 		return msg, fmt.Errorf("unsupported disk message format: clean bootstrap required")
 	}
 	offset := len(diskMessageMagic)

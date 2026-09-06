@@ -35,24 +35,7 @@ func recoverActiveSegmentMode(logPath, indexPath string, baseOffset uint64, reje
 	if info.Size() < 0 {
 		return segmentRecovery{}, fmt.Errorf("negative segment size for %s", logPath)
 	}
-	// #nosec G115 -- negative sizes are rejected above.
-	logSize := uint64(info.Size())
-
-	startPosition := uint64(0)
-	expectedOffset := baseOffset
-	if entry, ok := lastUsableIndexEntry(indexPath, logSize); ok {
-		valid, validateErr := indexEntryMatchesRecord(logPath, entry)
-		if validateErr == nil && valid {
-			startPosition = entry.Position
-			expectedOffset = entry.Offset
-		}
-	}
-
-	validBytes, nextOffset, partial, err := scanSegmentTail(logPath, startPosition, expectedOffset)
-	if err != nil && startPosition != 0 {
-		// A stale or corrupt index is recoverable because the log is authoritative.
-		validBytes, nextOffset, partial, err = scanSegmentTail(logPath, 0, baseOffset)
-	}
+	validBytes, nextOffset, partial, err := scanSegmentTail(logPath, 0, baseOffset)
 	if err != nil {
 		return segmentRecovery{}, err
 	}
