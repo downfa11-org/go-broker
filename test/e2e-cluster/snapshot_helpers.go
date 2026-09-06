@@ -13,13 +13,24 @@ import (
 )
 
 type LocalClusterStatus struct {
-	RaftLeader            string `json:"raft_leader"`
-	RaftState             string `json:"raft_state"`
-	RaftAppliedIndex      uint64 `json:"raft_applied_index"`
-	RaftCommitIndex       uint64 `json:"raft_commit_index"`
-	RaftLastLogIndex      uint64 `json:"raft_last_log_index"`
-	RaftLastSnapshotIndex uint64 `json:"raft_last_snapshot_index"`
-	RaftLastSnapshotTerm  uint64 `json:"raft_last_snapshot_term"`
+	RaftLeader            string                 `json:"raft_leader"`
+	RaftState             string                 `json:"raft_state"`
+	RaftAppliedIndex      uint64                 `json:"raft_applied_index"`
+	RaftCommitIndex       uint64                 `json:"raft_commit_index"`
+	RaftLastLogIndex      uint64                 `json:"raft_last_log_index"`
+	RaftLastSnapshotIndex uint64                 `json:"raft_last_snapshot_index"`
+	RaftLastSnapshotTerm  uint64                 `json:"raft_last_snapshot_term"`
+	Partitions            []LocalPartitionStatus `json:"partitions"`
+}
+
+type LocalPartitionStatus struct {
+	Topic           string   `json:"topic"`
+	Partition       int      `json:"partition"`
+	Leader          string   `json:"leader"`
+	LeaderEpoch     int      `json:"leader_epoch"`
+	ISR             []string `json:"isr"`
+	CommittedHWM    uint64   `json:"committed_hwm"`
+	LeaderAvailable bool     `json:"leader_available"`
 }
 
 type LocalTopicDefinition struct {

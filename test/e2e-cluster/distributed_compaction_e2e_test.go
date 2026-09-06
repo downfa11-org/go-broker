@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -204,38 +205,92 @@ func requireReplicaOffsetsEventually(t *testing.T, addrs []string, topicName str
 
 func requireFailoverISRReady(t *testing.T, addrs []string, topicName string, unavailableNode int, expected uint64) {
 	t.Helper()
-	unavailableBroker := fmt.Sprintf("broker-%d", unavailableNode)
 	require.NoError(t, eventually(t, "failover ISR convergence", 2*clusterReadyTimeout, func() (bool, string, error) {
-		client := e2e.NewBrokerClient(addrs)
-		response, err := client.SendCommand("", fmt.Sprintf("DESCRIBE topic=%s", topicName), 5*time.Second)
-		client.Close()
+		return failoverISRConverged(addrs, topicName, unavailableNode, expected, func(addr string) (string, error) {
+			client := e2e.NewBrokerClient([]string{addr})
+			defer client.Close()
+			return client.SendCommand("", "CLUSTER_STATUS", 5*time.Second)
+		})
+	}))
+}
+
+func failoverISRConverged(addrs []string, topicName string, unavailableNode int, expected uint64, fetch func(string) (string, error)) (bool, string, error) {
+	wantISR := make([]string, 0, len(addrs))
+	for node := 1; node <= len(addrs)+1; node++ {
+		if node != unavailableNode {
+			wantISR = append(wantISR, fmt.Sprintf("broker-%d-9000", node))
+		}
+	}
+	slices.Sort(wantISR)
+	var leader string
+	var epoch int
+	for _, addr := range addrs {
+		response, err := fetch(addr)
 		if err != nil {
-			return false, fmt.Sprintf("DESCRIBE failed: %v", err), nil
+			return false, fmt.Sprintf("%s CLUSTER_STATUS failed: %v", addr, err), nil
 		}
-		var metadata topicMetadata
-		if err := json.Unmarshal([]byte(response), &metadata); err != nil {
-			return false, response, err
+		status, err := parseLocalClusterStatus(response)
+		if err != nil {
+			return false, addr + ": " + response, err
 		}
-		if len(metadata.Partitions) != 1 {
-			return false, fmt.Sprintf("partitions=%d", len(metadata.Partitions)), nil
-		}
-		partition := metadata.Partitions[0]
-		if partition.Leader == "" || strings.HasPrefix(partition.Leader, unavailableBroker+":") {
-			return false, fmt.Sprintf("leader=%q", partition.Leader), nil
-		}
-		if len(partition.ISR) != len(addrs) {
-			return false, fmt.Sprintf("isr=%v", partition.ISR), nil
-		}
-		for _, broker := range partition.ISR {
-			if broker == unavailableBroker {
-				return false, fmt.Sprintf("isr=%v", partition.ISR), nil
+		var partition *LocalPartitionStatus
+		for i := range status.Partitions {
+			if status.Partitions[i].Topic == topicName && status.Partitions[i].Partition == 0 {
+				partition = &status.Partitions[i]
+				break
 			}
 		}
-		if partition.LEO != expected || partition.HWM != expected {
-			return false, fmt.Sprintf("leo=%d hwm=%d", partition.LEO, partition.HWM), nil
+		if partition == nil {
+			return false, addr + ": partition not found", nil
 		}
-		return true, fmt.Sprintf("leader=%s isr=%v leo=%d hwm=%d", partition.Leader, partition.ISR, partition.LEO, partition.HWM), nil
-	}))
+		slices.Sort(partition.ISR)
+		if !partition.LeaderAvailable || !slices.Contains(wantISR, partition.Leader) || partition.LeaderEpoch <= 0 ||
+			!slices.Equal(partition.ISR, wantISR) || partition.CommittedHWM != expected {
+			return false, fmt.Sprintf("%s partition=%+v", addr, *partition), nil
+		}
+		if leader == "" {
+			leader, epoch = partition.Leader, partition.LeaderEpoch
+		} else if partition.Leader != leader || partition.LeaderEpoch != epoch {
+			return false, fmt.Sprintf("%s leader=%s/%d want=%s/%d", addr, partition.Leader, partition.LeaderEpoch, leader, epoch), nil
+		}
+	}
+	return len(addrs) > 0, fmt.Sprintf("leader=%s/%d isr=%v hwm=%d", leader, epoch, wantISR, expected), nil
+}
+
+func TestFailoverISRConvergedRequiresEveryReplicaFence(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*LocalPartitionStatus)
+		ready  bool
+	}{
+		{"matching", func(*LocalPartitionStatus) {}, true},
+		{"reordered ISR", func(p *LocalPartitionStatus) { slices.Reverse(p.ISR) }, true},
+		{"stale epoch", func(p *LocalPartitionStatus) { p.LeaderEpoch-- }, false},
+		{"different leader", func(p *LocalPartitionStatus) { p.Leader = "broker-3-9000" }, false},
+		{"dead leader", func(p *LocalPartitionStatus) { p.Leader = "broker-2-9000" }, false},
+		{"unavailable leader", func(p *LocalPartitionStatus) { p.LeaderAvailable = false }, false},
+		{"dead ISR member", func(p *LocalPartitionStatus) { p.ISR[1] = "broker-2-9000" }, false},
+		{"duplicate ISR member", func(p *LocalPartitionStatus) { p.ISR[1] = p.ISR[0] }, false},
+		{"stale HWM", func(p *LocalPartitionStatus) { p.CommittedHWM-- }, false},
+		{"missing partition", func(p *LocalPartitionStatus) { p.Topic = "other" }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var probed []string
+			ready, detail, err := failoverISRConverged([]string{"first", "second"}, "orders", 2, 18, func(addr string) (string, error) {
+				probed = append(probed, addr)
+				partition := LocalPartitionStatus{Topic: "orders", Leader: "broker-1-9000", LeaderEpoch: 3,
+					ISR: []string{"broker-1-9000", "broker-3-9000"}, CommittedHWM: 18, LeaderAvailable: true}
+				if addr == "second" {
+					test.change(&partition)
+				}
+				data, err := json.Marshal(LocalClusterStatus{RaftState: "Follower", Partitions: []LocalPartitionStatus{partition}})
+				return "OK cluster=" + string(data), err
+			})
+			require.NoError(t, err)
+			require.Equal(t, test.ready, ready, detail)
+			require.Equal(t, []string{"first", "second"}, probed)
+		})
+	}
 }
 
 func availableBrokerAddrs(addrs []string, unavailableNode int) []string {
