@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -77,6 +78,9 @@ type Producer struct {
 	closeMu   sync.Mutex
 	closeDone chan struct{}
 	closeErr  error
+
+	deliveryMu  sync.Mutex
+	deliveryErr error
 
 	bmMu         sync.Mutex
 	bmTotalTime  map[int]time.Duration
@@ -585,20 +589,38 @@ func (p *Producer) extractAny(buf *partitionBuffer) []Message {
 
 // ─── Flush / Stats ────────────────────────────────────────────────────────────
 
-func (p *Producer) Flush() {
+func (p *Producer) Flush() error {
 	timeout := p.flushTimeout()
 
 	p.closeMu.Lock()
 	if atomic.LoadInt32(&p.closed) == 1 {
 		p.closeMu.Unlock()
-		return
+		return p.deliveryError()
 	}
 	waiters := p.requestDrain(false)
 	p.closeMu.Unlock()
 
 	if !waitForDrain(waiters, timeout) {
-		LogWarn("Flush timeout after %v", timeout)
+		return errors.Join(fmt.Errorf("producer flush timeout after %v", timeout), p.deliveryError())
 	}
+	return p.deliveryError()
+}
+
+func (p *Producer) recordDeliveryFailure(err error) {
+	if err == nil {
+		return
+	}
+	p.deliveryMu.Lock()
+	if p.deliveryErr == nil {
+		p.deliveryErr = err
+	}
+	p.deliveryMu.Unlock()
+}
+
+func (p *Producer) deliveryError() error {
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	return p.deliveryErr
 }
 
 func (p *Producer) flushTimeout() time.Duration {
@@ -818,10 +840,7 @@ func (p *Producer) Close() (result error) {
 	p.sendersWG.Wait()
 
 	if !drained {
-		if clientErr != nil {
-			return fmt.Errorf("producer close: drain timeout after %v; close client: %w", timeout, clientErr)
-		}
-		return fmt.Errorf("producer close: drain timeout after %v", timeout)
+		return errors.Join(fmt.Errorf("producer close: drain timeout after %v", timeout), clientErr, p.deliveryError())
 	}
-	return clientErr
+	return errors.Join(clientErr, p.deliveryError())
 }

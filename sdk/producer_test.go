@@ -1064,7 +1064,7 @@ type producerDrainBrokerResult struct {
 	err      error
 }
 
-func newProducerDrainTestHarness(t *testing.T) (*Producer, <-chan producerDrainBrokerResult) {
+func newProducerDrainTestHarness(t *testing.T, rejection ...string) (*Producer, <-chan producerDrainBrokerResult) {
 	t.Helper()
 
 	cfg := NewDefaultPublisherConfig()
@@ -1091,8 +1091,14 @@ func newProducerDrainTestHarness(t *testing.T) (*Producer, <-chan producerDrainB
 			resultCh <- producerDrainBrokerResult{err: err}
 			return
 		}
-		ack, err := json.Marshal(AckResponse{Status: "OK"})
+		ack, err := json.Marshal(AckResponse{
+			Status: "OK", ProducerID: messages[0].ProducerID, ProducerEpoch: messages[0].Epoch,
+			SeqStart: messages[0].SeqNum, SeqEnd: messages[len(messages)-1].SeqNum,
+		})
 		if err == nil {
+			if len(rejection) > 0 {
+				ack = []byte(rejection[0])
+			}
 			err = writeWireTestResponse(connection, request, string(ack))
 		}
 		resultCh <- producerDrainBrokerResult{messages: messages, err: err}
@@ -1137,7 +1143,7 @@ func TestProducerFlushDrainsPartialBatchWithoutWaitingForLinger(t *testing.T) {
 	require.NoError(t, err)
 
 	started := time.Now()
-	p.Flush()
+	require.NoError(t, p.Flush())
 	require.Less(t, time.Since(started), 2*time.Second)
 
 	select {

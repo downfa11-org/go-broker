@@ -142,6 +142,9 @@ func (pc *PartitionConsumer) runWorker() {
 
 		lastOffset := batch.messages[len(batch.messages)-1].Offset
 		commitOffset := lastOffset + 1
+		if !pc.consumer.config.EnableAutoCommit {
+			continue
+		}
 
 		if err := pc.commitOffsetWithRetry(commitOffset); err != nil {
 			LogError("Partition [%d] failed to commit offset %d: %v", pc.partitionID, commitOffset, err)

@@ -17,6 +17,8 @@ metadata:
     {{- include "cursus.labels" . | nindent 4 }}  
 spec:  
   replicas: {{ .Values.replicaCount }}  
+  strategy:
+    type: Recreate
   selector:  
     matchLabels:  
       {{- include "cursus.selectorLabels" . | nindent 6 }}  

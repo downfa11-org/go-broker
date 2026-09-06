@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cursus-io/cursus/pkg/config"
+	"github.com/cursus-io/cursus/pkg/disk"
 	"github.com/cursus-io/cursus/pkg/types"
 	"github.com/cursus-io/cursus/util"
 )
@@ -102,5 +104,37 @@ func TestAppendMessageSyncConcurrentOffsetsAreContiguous(t *testing.T) {
 	}
 	if got := dh.GetAbsoluteOffset(); got != writers {
 		t.Fatalf("got tail %d, want %d", got, writers)
+	}
+}
+
+func TestAppendMessageSyncDrainsEarlierAsyncAppendInOrder(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.LogDir = t.TempDir()
+	cfg.LingerMS = 60_000
+	cfg.DiskFlushIntervalMS = 60_000
+	handler, err := disk.NewDiskHandler(cfg, "orders", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Close() })
+
+	asyncOffset, err := handler.AppendMessage("orders", 0, &types.Message{Payload: "async"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncOffset, err := handler.AppendMessageSync("orders", 0, &types.Message{Payload: "sync"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asyncOffset != 0 || syncOffset != 1 {
+		t.Fatalf("offsets = %d, %d; want 0, 1", asyncOffset, syncOffset)
+	}
+
+	messages, err := handler.ReadMessages(0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].Offset != 0 || messages[1].Offset != 1 {
+		t.Fatalf("messages = %+v, want offsets 0 then 1", messages)
 	}
 }
