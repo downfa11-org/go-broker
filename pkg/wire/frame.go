@@ -128,27 +128,49 @@ func (c *Codec) WriteFrame(writer io.Writer, frame Frame) error {
 }
 
 func (c *Codec) ReadFrame(reader io.Reader) (Frame, error) {
+	frame, release, err := c.ReadFrameWithAdmission(reader, nil)
+	if release != nil {
+		release()
+	}
+	return frame, err
+}
+
+func (c *Codec) ReadFrameWithAdmission(reader io.Reader, admit FrameAdmission) (Frame, func(), error) {
 	if c == nil {
-		return Frame{}, fmt.Errorf("%w: nil codec", ErrInvalidFrame)
+		return Frame{}, nil, fmt.Errorf("%w: nil codec", ErrInvalidFrame)
 	}
 	headerBytes := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(reader, headerBytes); err != nil {
-		return Frame{}, fmt.Errorf("read Wire v2 header: %w", err)
+		return Frame{}, nil, fmt.Errorf("read Wire v2 header: %w", err)
 	}
 	header, err := c.decodeHeader(headerBytes)
 	if err != nil {
 		recordProtocolFailure(err)
-		return Frame{}, err
+		return Frame{}, nil, err
+	}
+	release := func() {}
+	if admit != nil {
+		reserved, admissionErr := admit(header.frame, header.encodedSize, header.decodedSize)
+		if reserved != nil {
+			release = reserved
+		}
+		if admissionErr != nil {
+			release()
+			return Frame{}, nil, admissionErr
+		}
 	}
 	payload := make([]byte, header.encodedSize)
 	if _, err := io.ReadFull(reader, payload); err != nil {
-		return Frame{}, fmt.Errorf("read Wire v2 payload: %w", err)
+		release()
+		return Frame{}, nil, fmt.Errorf("read Wire v2 payload: %w", err)
 	}
 	frame, err := c.decodePayload(header, payload)
 	if err != nil {
 		recordProtocolFailure(err)
+		release()
+		return Frame{}, nil, err
 	}
-	return frame, err
+	return frame, release, nil
 }
 
 type decodedHeader struct {

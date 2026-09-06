@@ -10,6 +10,10 @@ data:
     max_client_connections: {{ .Values.limits.maxClientConnections }}
     max_stream_connections: {{ .Values.limits.maxStreamConnections }}
     client_idle_timeout_ms: {{ .Values.limits.clientIdleTimeoutMS }}
+    max_inflight_requests: {{ .Values.limits.maxInFlightRequests }}
+    max_request_bytes: {{ .Values.limits.maxRequestBytes }}
+    max_internal_inflight_requests: {{ .Values.limits.maxInternalInFlightRequests }}
+    max_internal_request_bytes: {{ .Values.limits.maxInternalRequestBytes }}
     enabled_distribution: {{ eq .Values.mode "cluster" }}
     {{- if eq .Values.mode "cluster" }}
     bootstrap_cluster: true

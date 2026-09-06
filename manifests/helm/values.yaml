@@ -26,6 +26,10 @@ limits:
   maxClientConnections: 128
   maxStreamConnections: 128
   clientIdleTimeoutMS: 60000
+  maxInFlightRequests: 16
+  maxRequestBytes: 67108864
+  maxInternalInFlightRequests: 32
+  maxInternalRequestBytes: 134217728
 
 image:
   repository: ghcr.io/cursus-io/cursus

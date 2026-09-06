@@ -92,6 +92,23 @@ The same configuration can be expressed in JSON format:
 The configuration is represented by the Config struct in the codebase, which organizes parameters into logical categories.
 
 
+### Request Admission
+
+The broker reserves one in-flight slot and `32 + encoded_length + decoded_length` bytes after validating each incoming frame header, before allocating its body. Reservations cover negotiation and application requests and remain held through processing and response writes; idle connections do not reserve slots. Client and internal listeners use separate, process-local pools so client saturation does not consume the internal replication pool.
+
+| YAML parameter | Environment override | Default |
+|----------------|----------------------|---------|
+| `max_inflight_requests` | `MAX_INFLIGHT_REQUESTS` | 32 |
+| `max_request_bytes` | `MAX_REQUEST_BYTES` | 134217728 (128 MiB) |
+| `max_internal_inflight_requests` | `MAX_INTERNAL_INFLIGHT_REQUESTS` | 32 |
+| `max_internal_request_bytes` | `MAX_INTERNAL_REQUEST_BYTES` | 134217728 (128 MiB) |
+
+Corresponding command-line flags replace underscores with hyphens. Non-positive broker values normalize to these bounded defaults; Helm rejects non-positive overrides. Limits are fixed at startup. Admission exhaustion closes the connection before reading the body or executing the command, without a success response. Transport failures do not prove whether an earlier request committed: only retry using the operation's idempotency/transaction contract, and back off under saturation. A frame allowed by the wire protocol can still exceed the remaining admission budget; reduce batch size or provision capacity for both encoded and decoded sizes plus the header.
+
+These counters bound incoming frame reservations, **not process RSS**. Parsed command copies, compression scratch buffers, responses, stream buffers, queues, transaction state and event indexes need additional memory headroom. Long polls retain a slot until completion; leave capacity for client heartbeats and other control requests. Stream handoff releases the initial request reservation and is governed separately by stream limits.
+
+Prometheus exposes `cursus_request_inflight`, `cursus_request_inflight_limit`, `cursus_request_reserved_bytes`, `cursus_request_byte_limit` and `cursus_request_rejected_total`, each labeled `listener="client"` or `listener="internal"`. Alert on sustained rejection increases and budget utilization together with process memory and latency; do not treat low reservation usage as evidence that total memory is safe.
+
 ### Common Parameters
 
 | Parameter           | Type       | Default        | Description                                      |

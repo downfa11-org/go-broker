@@ -10,6 +10,9 @@ import (
 	"github.com/cursus-io/cursus/util"
 )
 
+const DefaultMaxInFlightRequests = 32
+const DefaultMaxRequestBytes = 128 << 20
+
 func (cfg *Config) Normalize() {
 	if cfg.BrokerPort <= 0 {
 		cfg.BrokerPort = 9000
@@ -139,6 +142,18 @@ func (cfg *Config) Normalize() {
 	}
 	if cfg.ClientIdleTimeoutMS <= 0 {
 		cfg.ClientIdleTimeoutMS = 60000
+	}
+	if cfg.MaxInFlightRequests <= 0 {
+		cfg.MaxInFlightRequests = DefaultMaxInFlightRequests
+	}
+	if cfg.MaxRequestBytes <= 0 {
+		cfg.MaxRequestBytes = DefaultMaxRequestBytes
+	}
+	if cfg.MaxInternalInFlightRequests <= 0 {
+		cfg.MaxInternalInFlightRequests = DefaultMaxInFlightRequests
+	}
+	if cfg.MaxInternalRequestBytes <= 0 {
+		cfg.MaxInternalRequestBytes = DefaultMaxRequestBytes
 	}
 	for i := range cfg.StaticConsumerGroups {
 		g := &cfg.StaticConsumerGroups[i]

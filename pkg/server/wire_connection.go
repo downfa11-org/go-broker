@@ -34,6 +34,7 @@ func newServerWireConn(conn net.Conn, connection *wire.Connection) *serverWireCo
 
 func (c *serverWireConn) setRequest(request wire.Frame) {
 	c.mu.Lock()
+	request.Payload = nil
 	c.request = request
 	c.mu.Unlock()
 }
@@ -100,7 +101,11 @@ func isStreamClosePayload(payload []byte) bool {
 }
 
 func negotiateServerConnection(conn net.Conn) (*wire.Connection, *serverWireConn, error) {
-	connection, err := wire.ServerHandshake(conn, brokerCompressions)
+	return negotiateServerConnectionWithAdmission(conn, nil)
+}
+
+func negotiateServerConnectionWithAdmission(conn net.Conn, admit wire.FrameAdmission) (*wire.Connection, *serverWireConn, error) {
+	connection, err := wire.ServerHandshakeWithAdmission(conn, brokerCompressions, admit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -108,29 +113,50 @@ func negotiateServerConnection(conn net.Conn) (*wire.Connection, *serverWireConn
 }
 
 func readWireRequest(connection *wire.Connection) (wire.Frame, error) {
-	frame, err := connection.ReadFrame()
+	frame, release, err := readWireRequestWithAdmission(connection, nil)
+	if release != nil {
+		release()
+	}
+	return frame, err
+}
+
+func readWireRequestWithAdmission(connection *wire.Connection, admit wire.FrameAdmission) (wire.Frame, func(), error) {
+	frame, release, err := connection.ReadFrameWithAdmission(func(frame wire.Frame, encoded, decoded uint32) (func(), error) {
+		if frame.Kind != wire.KindRequest || frame.Status != wire.StatusNone || frame.RequestID == 0 {
+			return nil, fmt.Errorf("invalid Wire v2 request frame")
+		}
+		if admit != nil {
+			return admit(frame, encoded, decoded)
+		}
+		return nil, nil
+	})
 	if err != nil {
-		return wire.Frame{}, err
+		return wire.Frame{}, nil, err
 	}
-	if frame.Kind != wire.KindRequest || frame.Status != wire.StatusNone || frame.RequestID == 0 {
-		return wire.Frame{}, fmt.Errorf("invalid Wire v2 request frame")
-	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			release()
+		}
+	}()
 	if wire.IsBatch(frame.Payload) {
 		if frame.Command != wire.CommandPublish {
-			return wire.Frame{}, fmt.Errorf("wire v2 batch requires PUBLISH command")
+			return wire.Frame{}, nil, fmt.Errorf("wire v2 batch requires PUBLISH command")
 		}
-		return frame, nil
+		accepted = true
+		return frame, release, nil
 	}
 	payload, err := wire.DecodeCommandPayload(frame.Payload)
 	if err != nil {
-		return wire.Frame{}, fmt.Errorf("decode %s request: %w", frame.Command, err)
+		return wire.Frame{}, nil, fmt.Errorf("decode %s request: %w", frame.Command, err)
 	}
 	command, err := wire.RenderCommand(frame.Command, payload)
 	if err != nil {
-		return wire.Frame{}, err
+		return wire.Frame{}, nil, err
 	}
 	frame.Payload = []byte(command)
-	return frame, nil
+	accepted = true
+	return frame, release, nil
 }
 
 func (c *serverWireConn) SetDeadline(deadline time.Time) error {

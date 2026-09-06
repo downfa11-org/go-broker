@@ -80,6 +80,10 @@ func TestHelmStandaloneAndClusterContracts(t *testing.T) {
 	require.True(t, cfg.EnabledDistribution)
 	require.True(t, cfg.InternalUseTLS)
 	require.True(t, cfg.EnableExporter)
+	require.Equal(t, 16, cfg.MaxInFlightRequests)
+	require.Equal(t, 64<<20, cfg.MaxRequestBytes)
+	require.Equal(t, 32, cfg.MaxInternalInFlightRequests)
+	require.Equal(t, 128<<20, cfg.MaxInternalRequestBytes)
 	require.Equal(t, 3, cfg.DefaultReplicationFactor)
 	require.Len(t, cfg.StaticClusterMembers, 3)
 	for i, member := range cfg.StaticClusterMembers {
@@ -95,6 +99,8 @@ func TestHelmRejectsUnsafeOverrides(t *testing.T) {
 		{"mode=cluster", "replicaCount=3"}, {"production=true"},
 		{"authentication.enabled=true", "authentication.secretName=users"},
 		{"limits.maxClientConnections=0"}, {"service.port=9080"},
+		{"limits.maxInFlightRequests=0"}, {"limits.maxRequestBytes=-1"},
+		{"limits.maxInternalInFlightRequests=0"}, {"limits.maxInternalRequestBytes=-1"},
 		{"tls.enabled=true", "tls.certPath=/tmp/cert.pem"},
 		{"mode=cluster", "replicaCount=3", "service.type=LoadBalancer"},
 	} {
