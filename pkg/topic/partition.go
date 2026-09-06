@@ -346,6 +346,9 @@ func (p *Partition) EnqueueBatchSyncWithMode(msgs []types.Message, forceIdempote
 	if p.closed {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
+	if storage, ok := p.dh.(types.AllocatingBatchStorage); ok {
+		return p.appendStandaloneBatch(storage, msgs, forceIdempotent)
+	}
 
 	for i := range msgs {
 		duplicate, err := p.validateProducerMessageWithStage(&msgs[i], nil, forceIdempotent)

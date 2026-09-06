@@ -494,6 +494,13 @@ func (m *Manager) ExportState() map[string]*Snapshot {
 	return out
 }
 
+func (m *Manager) SnapshotByID(id string) (*Snapshot, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tx, ok := m.txns[id]
+	return snapshot(tx), ok
+}
+
 func (m *Manager) ImportState(state map[string]*Snapshot) error {
 	if err := ValidateImportState(state); err != nil {
 		return err
@@ -652,12 +659,21 @@ func validateOwner(tx *Transaction, producer string, epoch int64) error {
 	return nil
 }
 
+func cloneMessageOperations(messages []MessageOperation) []MessageOperation {
+	out := append([]MessageOperation(nil), messages...)
+	for i := range out {
+		out[i].Message.ControlBatchKey = append([]byte(nil), out[i].Message.ControlBatchKey...)
+		out[i].Message.ControlBatchValue = append([]byte(nil), out[i].Message.ControlBatchValue...)
+	}
+	return out
+}
+
 func clone(tx *Transaction) *Transaction {
 	if tx == nil {
 		return nil
 	}
 	out := *tx
-	out.Messages = append([]MessageOperation(nil), tx.Messages...)
+	out.Messages = cloneMessageOperations(tx.Messages)
 	out.Offsets = append([]OffsetOperation(nil), tx.Offsets...)
 	return &out
 }
@@ -674,7 +690,7 @@ func snapshot(tx *Transaction) *Snapshot {
 		Ready:     tx.Ready,
 		Expired:   tx.Expired,
 		State:     tx.State,
-		Messages:  append([]MessageOperation(nil), tx.Messages...),
+		Messages:  cloneMessageOperations(tx.Messages),
 		Offsets:   append([]OffsetOperation(nil), tx.Offsets...),
 		CreatedAt: tx.CreatedAt,
 		UpdatedAt: tx.UpdatedAt,
@@ -690,7 +706,7 @@ func transactionFromSnapshot(snap *Snapshot) *Transaction {
 		Ready:     snap.Ready,
 		Expired:   snap.Expired,
 		State:     snap.State,
-		Messages:  append([]MessageOperation(nil), snap.Messages...),
+		Messages:  cloneMessageOperations(snap.Messages),
 		Offsets:   append([]OffsetOperation(nil), snap.Offsets...),
 		CreatedAt: snap.CreatedAt,
 		UpdatedAt: snap.UpdatedAt,

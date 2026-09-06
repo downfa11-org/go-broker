@@ -31,6 +31,12 @@ type DurableBatchStorage interface {
 	WriteBatchSync(batch []DiskMessage) error
 }
 
+// AllocatingBatchStorage preserves queued append order while sharing a sync.
+type AllocatingBatchStorage interface {
+	StorageHandler
+	AppendBatchSync(topic string, partition int, messages []Message) error
+}
+
 // CompactedRangeStorage durably materializes a logical replica range whose
 // superseded offsets may be absent from the physical record stream.
 type CompactedRangeStorage interface {

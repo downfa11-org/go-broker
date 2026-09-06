@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cursus-io/cursus/pkg/cluster/replication/fsm"
 	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/test/e2e"
 )
@@ -126,6 +127,7 @@ func TestChaosTransactionCoordinatorRestartPreservesAtomicVisibility(t *testing.
 	txnClient.Close()
 	actions.KillBroker(coordinatorNode)
 	actions.StartBroker(coordinatorNode)
+	requireClusterLifecycleProtocolEventually(t, ctx.GetBrokerAddrs(), fsm.PreparedTransactionProtocolVersion)
 
 	recoveryClient := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 	defer recoveryClient.Close()
