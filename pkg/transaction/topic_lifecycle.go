@@ -32,8 +32,10 @@ func (m *Manager) PruneTopicReferences(topicName string) ([]string, error) {
 		return nil, err
 	}
 	m.txns = make(map[string]*Transaction, len(state))
+	m.sizes = make(map[string]int64, len(state))
+	m.totalBytes = 0
 	for id, snap := range state {
-		m.txns[id] = transactionFromSnapshot(snap)
+		m.replaceLocked(id, transactionFromSnapshot(snap))
 	}
 	return affected, nil
 }

@@ -124,6 +124,7 @@ type Collector struct {
 	transactionStates               *prometheus.Desc
 	transactionExpired              *prometheus.Desc
 	transactionOldestActive         *prometheus.Desc
+	transactionRetainedBytes        *prometheus.Desc
 }
 
 type observationFailureKey struct {
@@ -210,6 +211,7 @@ func NewCollector(topics topicSource, groups groupSource, diskState diskSource, 
 		transactionStates:               prometheus.NewDesc("cursus_transactions", "Transactions retained by coordinator state.", []string{"state"}, nil),
 		transactionExpired:              prometheus.NewDesc("cursus_transactions_expired", "Expired transaction identities awaiting replacement or compaction.", nil, nil),
 		transactionOldestActive:         prometheus.NewDesc("cursus_transaction_oldest_active_seconds", "Age of the oldest open or committing transaction.", nil, nil),
+		transactionRetainedBytes:        prometheus.NewDesc("cursus_transaction_retained_bytes", "Conservative admission charge for retained transaction state; not process RSS.", nil, nil),
 		observationFailures:             make(map[observationFailureKey]uint64),
 	}
 	if len(transactions) > 0 {
@@ -235,6 +237,7 @@ func NewCollector(topics topicSource, groups groupSource, diskState diskSource, 
 		c.topicMaterializationAttempts, c.topicMaterializationOldest, c.partitionReplicas,
 		c.partitionInSync, c.partitionLeaderEpoch, c.partitionLeader, c.isrCatchupProofs,
 		c.transactionRecovery, c.transactionStates, c.transactionExpired, c.transactionOldestActive,
+		c.transactionRetainedBytes,
 	}
 	return c
 }
@@ -314,6 +317,7 @@ func (c *Collector) collectTransactions(ch chan<- prometheus.Metric) {
 	}
 	ch <- gauge(c.transactionExpired, float64(state.Expired))
 	ch <- gauge(c.transactionOldestActive, state.OldestActiveAgeSeconds)
+	ch <- gauge(c.transactionRetainedBytes, float64(state.RetainedBytes))
 }
 func (c *Collector) collectGroups(
 	ch chan<- prometheus.Metric,
