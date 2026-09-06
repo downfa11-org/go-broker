@@ -62,3 +62,12 @@ func BenchmarkTransactionSnapshotSelection(b *testing.B) {
 		}
 	})
 }
+
+func TestJournalCompactionByteThresholdMeasuresNewGrowth(t *testing.T) {
+	j := &Journal{validEnd: 2 * journalCompactionBytes, compactedBytes: 2 * journalCompactionBytes}
+	require.False(t, j.shouldCompactLocked())
+	j.validEnd += journalCompactionBytes - 1
+	require.False(t, j.shouldCompactLocked())
+	j.validEnd++
+	require.True(t, j.shouldCompactLocked())
+}
