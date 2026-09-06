@@ -629,7 +629,7 @@ Error responses:
 
 **READ_STREAM**
 ```
-READ_STREAM topic=<name> key=<aggregate_key> [from_version=<N>]
+READ_STREAM topic=<name> key=<aggregate_key> [from_version=<N>] [limit=<1..1024>] [through_version=<N>] [lifecycle_epoch=<N>] [snapshot=<true|false>]
 ```
 | Param | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -651,9 +651,11 @@ Frame 1 — JSON envelope:
 }
 ```
 
-The `snapshot` field is included only when a snapshot exists at or after `from_version`. `count` reflects the number of events in Frame 2 (not including the snapshot).
+The `snapshot` field is included only when a usable snapshot exists at or after `from_version`, snapshot use is enabled, and the snapshot is within `through_version` when specified. `count` reflects the number of events in Frame 2 (not including the snapshot).
 
-Frame 2 — Wire v2 `CBV2` batch containing the events. If no events exist after the snapshot, the batch has message count 0. A missing, zero, or non-numeric `from_version` is handled as follows: missing defaults to `1`; zero or non-numeric values return a JSON error envelope with `error:"invalid_from_version"` and no batch frame.
+Paged responses include `stream_version`, `has_more`, `next_version`, and `lifecycle_epoch`. `limit` defaults to 256 and is capped at 1024; encoded batches are additionally capped at 64 MiB. Continue with `from_version=next_version`, the initial `through_version=stream_version`, the initial `lifecycle_epoch`, and `snapshot=false`. `has_more=false` uses `next_version=0`. Invalid limits/cursors, missing indexed records, and encoding failures return an error before either success frame. Without an explicit `limit`, a multi-page result returns `stream_page_required` instead of a partial result.
+
+Frame 2 — Wire v2 `CBV2` batch containing the events. If no events exist after the snapshot, the batch has message count 0. A missing `from_version` defaults to `1`; zero or non-numeric values return a Wire v2 error response with code `invalid_from_version` and no batch frame.
 
 **STREAM_VERSION**
 ```

@@ -186,32 +186,53 @@ func (r *AggregateRepository) Load(id string) (Aggregate, error) {
 	if aggregate == nil {
 		return nil, fmt.Errorf("aggregate factory returned nil for %q", id)
 	}
-	stream, err := r.store.ReadStream(id)
+	err := walkStoreStream(r.store, id, 0, func(stream *StreamData) error {
+		if stream.Snapshot != nil {
+			restorer, ok := aggregate.(SnapshotRestorer)
+			if !ok {
+				return fmt.Errorf("aggregate %q has a snapshot but does not implement SnapshotRestorer", id)
+			}
+			if err := restorer.RestoreSnapshot(stream.Snapshot.Payload, stream.Snapshot.Version); err != nil {
+				return fmt.Errorf("restore aggregate snapshot: %w", err)
+			}
+		}
+		for _, streamEvent := range stream.Events {
+			envelope, err := decodeEventEnvelope(streamEvent)
+			if err != nil {
+				return err
+			}
+			if envelope.AggregateID != id {
+				return fmt.Errorf("event aggregate id %q does not match %q", envelope.AggregateID, id)
+			}
+			if err := aggregate.Apply(envelope); err != nil {
+				return fmt.Errorf("apply %s v%d: %w", envelope.EventType, envelope.AggregateVersion, err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if stream.Snapshot != nil {
-		restorer, ok := aggregate.(SnapshotRestorer)
-		if !ok {
-			return nil, fmt.Errorf("aggregate %q has a snapshot but does not implement SnapshotRestorer", id)
-		}
-		if err := restorer.RestoreSnapshot(stream.Snapshot.Payload, stream.Snapshot.Version); err != nil {
-			return nil, fmt.Errorf("restore aggregate snapshot: %w", err)
-		}
-	}
-	for _, streamEvent := range stream.Events {
-		envelope, err := decodeEventEnvelope(streamEvent)
-		if err != nil {
-			return nil, err
-		}
-		if envelope.AggregateID != id {
-			return nil, fmt.Errorf("event aggregate id %q does not match %q", envelope.AggregateID, id)
-		}
-		if err := aggregate.Apply(envelope); err != nil {
-			return nil, fmt.Errorf("apply %s v%d: %w", envelope.EventType, envelope.AggregateVersion, err)
-		}
-	}
 	return aggregate, nil
+}
+
+func walkStoreStream(store StreamStore, key string, fromVersion uint64, visit func(*StreamData) error) error {
+	if walker, ok := store.(interface {
+		WalkStream(string, uint64, func(*StreamData) error) error
+	}); ok {
+		return walker.WalkStream(key, fromVersion, visit)
+	}
+	stream, err := store.ReadStream(key)
+	if err != nil {
+		return err
+	}
+	if stream == nil {
+		return fmt.Errorf("stream store returned nil")
+	}
+	if stream.HasMore {
+		return ErrStreamPageRequired
+	}
+	return visit(stream)
 }
 
 func (r *AggregateRepository) Save(aggregate Aggregate, events []EventEnvelope) error {

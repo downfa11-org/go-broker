@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -349,6 +351,37 @@ func (si *StreamIndex) Lookup(key string, fromVersion uint64) ([]StreamIndexEntr
 		}
 	}
 	return result, nil
+}
+
+func (si *StreamIndex) LookupPage(key string, fromVersion, throughVersion uint64, limit int) ([]StreamIndexEntry, uint64, bool, error) {
+	si.mu.RLock()
+	defer si.mu.RUnlock()
+	if si.recoveryErr != nil {
+		return nil, 0, false, si.recoveryErr
+	}
+	if limit <= 0 || limit > wire.MaxStreamPageEvents {
+		return nil, 0, false, fmt.Errorf("page limit must be between 1 and %d", wire.MaxStreamPageEvents)
+	}
+	var current uint64
+	if state := si.states[key]; state != nil {
+		current = state.currentVersion
+	}
+	if throughVersion == 0 {
+		throughVersion = current
+	} else if throughVersion > current {
+		return nil, 0, false, fmt.Errorf("stream version unavailable requested=%d current=%d", throughVersion, current)
+	}
+	entries := si.entries[key]
+	start := sort.Search(len(entries), func(i int) bool { return entries[i].AggregateVersion >= fromVersion })
+	end := sort.Search(len(entries), func(i int) bool { return entries[i].AggregateVersion > throughVersion })
+	if start >= end {
+		return nil, throughVersion, false, nil
+	}
+	pageEnd := end
+	if end-start > limit {
+		pageEnd = start + limit
+	}
+	return append([]StreamIndexEntry(nil), entries[start:pageEnd]...), throughVersion, pageEnd < end, nil
 }
 
 // Reset clears the derived index so it can be rebuilt from the committed log.

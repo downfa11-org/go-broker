@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/sdk/internal/transport"
 )
 
@@ -40,9 +42,15 @@ type Snapshot struct {
 
 // StreamData is the result of reading a stream.
 type StreamData struct {
-	Snapshot *Snapshot
-	Events   []StreamEvent
+	Snapshot       *Snapshot
+	Events         []StreamEvent
+	StreamVersion  uint64
+	NextVersion    uint64
+	HasMore        bool
+	LifecycleEpoch uint64
 }
+
+var ErrStreamPageRequired = errors.New("stream exceeds one page; use ReadStreamPage or WalkStream")
 
 // AppendResult is returned after successfully appending an event.
 type AppendResult struct {
@@ -226,7 +234,7 @@ func parseAppendResponse(resp string) (*AppendResult, error) {
 	return result, nil
 }
 
-// ReadStream reads all events for an aggregate, automatically using snapshots.
+// ReadStream reads a complete stream within one page, automatically using snapshots.
 func (es *EventStore) ReadStream(key string) (*StreamData, error) {
 	return es.ReadStreamFrom(key, 0)
 }
@@ -234,16 +242,75 @@ func (es *EventStore) ReadStream(key string) (*StreamData, error) {
 // ReadStreamFrom reads events starting from a specific version.
 // If fromVersion is 0, the broker auto-resolves using snapshots.
 func (es *EventStore) ReadStreamFrom(key string, fromVersion uint64) (*StreamData, error) {
+	page, err := es.readStreamPage(key, fromVersion, wire.DefaultStreamPageEvents, 0, 0, true)
+	if err != nil {
+		return nil, err
+	}
+	if page.HasMore {
+		return nil, ErrStreamPageRequired
+	}
+	return page, nil
+}
+
+// ReadStreamPage returns one bounded page. Version zero permits a snapshot;
+// positive versions read event history without skipping to a newer snapshot.
+func (es *EventStore) ReadStreamPage(key string, fromVersion uint64, limit int) (*StreamData, error) {
+	return es.readStreamPage(key, fromVersion, limit, 0, 0, fromVersion == 0)
+}
+
+// WalkStream visits bounded pages through the first page's stream version.
+// A callback error stops replay; callbacks may use other EventStore operations.
+func (es *EventStore) WalkStream(key string, fromVersion uint64, visit func(*StreamData) error) error {
+	if visit == nil {
+		return fmt.Errorf("stream visitor is required")
+	}
+	var through, epoch uint64
+	for {
+		page, err := es.readStreamPage(key, fromVersion, wire.DefaultStreamPageEvents, through, epoch, fromVersion == 0)
+		if err != nil {
+			return err
+		}
+		next, version, pageEpoch, hasMore := page.NextVersion, page.StreamVersion, page.LifecycleEpoch, page.HasMore
+		if err := visit(page); err != nil {
+			return err
+		}
+		if !hasMore {
+			return nil
+		}
+		through, epoch, fromVersion = version, pageEpoch, next
+	}
+}
+
+func (es *EventStore) readStreamPage(key string, fromVersion uint64, limit int, throughVersion, lifecycleEpoch uint64, useSnapshot bool) (_ *StreamData, readErr error) {
 	es.requestMu.Lock()
 	defer es.requestMu.Unlock()
+	if limit < 1 || limit > wire.MaxStreamPageEvents || key == "" || strings.ContainsAny(key, " \t\r\n") {
+		return nil, fmt.Errorf("invalid stream key or page limit")
+	}
 
-	cmd := fmt.Sprintf("READ_STREAM topic=%s key=%s", es.topic, key)
+	cmd := fmt.Sprintf("READ_STREAM topic=%s key=%s limit=%d snapshot=%t", es.topic, key, limit, useSnapshot)
 	if fromVersion > 0 {
 		cmd += fmt.Sprintf(" from_version=%d", fromVersion)
+	}
+	if throughVersion > 0 {
+		cmd += fmt.Sprintf(" through_version=%d", throughVersion)
+	}
+	if lifecycleEpoch > 0 {
+		cmd += fmt.Sprintf(" lifecycle_epoch=%d", lifecycleEpoch)
 	}
 
 	conn, err := es.getConn()
 	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if readErr != nil {
+			es.resetConn()
+		} else {
+			_ = conn.SetDeadline(time.Time{})
+		}
+	}()
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return nil, err
 	}
 
@@ -261,10 +328,17 @@ func (es *EventStore) ReadStreamFrom(key string, fromVersion uint64) (*StreamDat
 	}
 
 	var envelope struct {
-		Status   string    `json:"status"`
-		Error    string    `json:"error"`
-		Snapshot *Snapshot `json:"snapshot"`
-		Count    int       `json:"count"`
+		Status         string    `json:"status"`
+		Error          string    `json:"error"`
+		Snapshot       *Snapshot `json:"snapshot"`
+		Count          int       `json:"count"`
+		Topic          string    `json:"topic"`
+		Key            string    `json:"key"`
+		Partition      int       `json:"partition"`
+		StreamVersion  uint64    `json:"stream_version"`
+		NextVersion    uint64    `json:"next_version"`
+		HasMore        bool      `json:"has_more"`
+		LifecycleEpoch uint64    `json:"lifecycle_epoch"`
 	}
 	if err := json.Unmarshal(envData, &envelope); err != nil {
 		return nil, fmt.Errorf("unmarshal envelope: %w", err)
@@ -278,6 +352,10 @@ func (es *EventStore) ReadStreamFrom(key string, fromVersion uint64) (*StreamDat
 	if envelope.Status != "OK" {
 		return nil, fmt.Errorf("unexpected read stream status: %s", envelope.Status)
 	}
+	if envelope.Topic != es.topic || envelope.Key != key || envelope.Count < 0 || envelope.Count > limit || envelope.LifecycleEpoch == 0 ||
+		(lifecycleEpoch != 0 && envelope.LifecycleEpoch != lifecycleEpoch) || (throughVersion != 0 && envelope.StreamVersion != throughVersion) {
+		return nil, fmt.Errorf("invalid stream page identity, count, or boundary")
+	}
 
 	// Frame 2: Binary batch
 	batchData, err := ReadWithLength(conn)
@@ -287,15 +365,38 @@ func (es *EventStore) ReadStreamFrom(key string, fromVersion uint64) (*StreamDat
 	}
 
 	result := &StreamData{
-		Snapshot: envelope.Snapshot,
+		Snapshot:       envelope.Snapshot,
+		StreamVersion:  envelope.StreamVersion,
+		NextVersion:    envelope.NextVersion,
+		HasMore:        envelope.HasMore,
+		LifecycleEpoch: envelope.LifecycleEpoch,
 	}
+	nextExpected := fromVersion
+	if nextExpected == 0 {
+		nextExpected = 1
+	}
+	if envelope.Snapshot != nil {
+		if !useSnapshot || envelope.Snapshot.Version < nextExpected || envelope.Snapshot.Version > envelope.StreamVersion || envelope.Snapshot.Version == ^uint64(0) {
+			return nil, fmt.Errorf("invalid stream snapshot version")
+		}
+		nextExpected = envelope.Snapshot.Version + 1
+	}
+	lastVersion := nextExpected - 1
 
 	if len(batchData) > 0 {
-		msgs, _, _, err := DecodeBatchMessages(batchData)
+		msgs, batchTopic, batchPartition, err := DecodeBatchMessages(batchData)
 		if err != nil {
 			return nil, fmt.Errorf("decode batch: %w", err)
 		}
+		if batchTopic != es.topic || batchPartition != envelope.Partition || len(msgs) != envelope.Count {
+			return nil, fmt.Errorf("stream batch does not match envelope")
+		}
 		for _, m := range msgs {
+			if m.Key != key || m.AggregateVersion != nextExpected || m.AggregateVersion > envelope.StreamVersion {
+				return nil, fmt.Errorf("stream event identity or version mismatch")
+			}
+			lastVersion = m.AggregateVersion
+			nextExpected++
 			result.Events = append(result.Events, StreamEvent{
 				Version:       m.AggregateVersion,
 				Offset:        m.Offset,
@@ -305,6 +406,16 @@ func (es *EventStore) ReadStreamFrom(key string, fromVersion uint64) (*StreamDat
 				Metadata:      m.Metadata,
 			})
 		}
+	}
+	if len(result.Events) != envelope.Count {
+		return nil, fmt.Errorf("stream page count mismatch")
+	}
+	if envelope.HasMore {
+		if len(result.Events) == 0 || lastVersion >= envelope.StreamVersion || envelope.NextVersion != nextExpected {
+			return nil, fmt.Errorf("invalid stream continuation")
+		}
+	} else if envelope.NextVersion != 0 || lastVersion < envelope.StreamVersion {
+		return nil, fmt.Errorf("incomplete terminal stream page")
 	}
 
 	return result, nil
