@@ -222,6 +222,7 @@ func (f *BrokerFSM) reconcileMaterializedTopicHWM(topicName string, restoringSna
 		return nil
 	}
 	f.mu.RLock()
+	recovering := f.partitionRecoveryPending
 	definition := copyTopicDefinition(f.topicState[topicName])
 	metadata := make(map[int]PartitionMetadata)
 	if definition != nil {
@@ -257,6 +258,10 @@ func (f *BrokerFSM) reconcileMaterializedTopicHWM(topicName string, restoringSna
 		var reconcileErr error
 		if restoringSnapshot {
 			reconcileErr = currentPartition.ReconcileSnapshotHWM(partitionMetadata.CommittedHWM)
+		} else if recovering {
+			if !currentPartition.SnapshotRecoveryPending() {
+				reconcileErr = currentPartition.ReconcileSnapshotHWM(partitionMetadata.CommittedHWM)
+			}
 		} else {
 			reconcileErr = currentPartition.ReconcileCommittedHWM(partitionMetadata.CommittedHWM)
 		}

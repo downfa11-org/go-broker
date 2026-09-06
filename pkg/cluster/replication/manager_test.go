@@ -229,7 +229,7 @@ func TestAwaitRecoveredPartitionReplayResetsTimeoutOnProgress(t *testing.T) {
 		brokerFSM.setApplied(6)
 	}()
 
-	err := awaitRecoveredPartitionReplay(context.Background(), stats, store, brokerFSM, "broker-1", time.Second)
+	err := awaitRecoveredPartitionReplay(context.Background(), stats, store, brokerFSM, "broker-1", time.Second, replayBoundary{})
 	require.NoError(t, err)
 	require.True(t, brokerFSM.wasFinalized())
 }
@@ -243,7 +243,7 @@ func TestAwaitRecoveredPartitionReplayReportsStalledIndexes(t *testing.T) {
 	}}
 	brokerFSM := &fakeRecoveredPartitionFSM{pending: true, applied: 5}
 
-	err := awaitRecoveredPartitionReplay(context.Background(), stats, store, brokerFSM, "broker-1", 20*time.Millisecond)
+	err := awaitRecoveredPartitionReplay(context.Background(), stats, store, brokerFSM, "broker-1", 20*time.Millisecond, replayBoundary{})
 	require.ErrorContains(t, err, "without progress")
 	require.ErrorContains(t, err, "snapshot_index=5")
 	require.ErrorContains(t, err, "commit_index=8")
@@ -271,7 +271,7 @@ func TestAwaitRecoveredPartitionReplayScansStableCommitRangeOnce(t *testing.T) {
 		brokerFSM.setApplied(6)
 	}()
 
-	err := awaitRecoveredPartitionReplay(context.Background(), stats, store, brokerFSM, "broker-1", time.Second)
+	err := awaitRecoveredPartitionReplay(context.Background(), stats, store, brokerFSM, "broker-1", time.Second, replayBoundary{})
 	require.NoError(t, err)
 	require.Equal(t, int64(3), store.reads.Load())
 }
