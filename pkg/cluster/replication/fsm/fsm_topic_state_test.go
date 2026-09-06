@@ -87,7 +87,7 @@ func TestBrokerFSMAllowsCompactedTopicWhenAllBrokersSupportProtocol(t *testing.T
 
 func TestBrokerFSMRejectsCompactedTopicDuringMixedVersionRollout(t *testing.T) {
 	f := newTestFSM()
-	for index, protocolVersion := range []int{BrokerProtocolVersionCurrent, BrokerProtocolVersionCurrent - 1} {
+	for index, protocolVersion := range []int{BrokerProtocolVersionCurrent, DistributedCompactionProtocolVersion - 1} {
 		payload, err := json.Marshal(BrokerInfo{
 			ID: fmt.Sprintf("broker-%d", index+1), Addr: "127.0.0.1:9000", Status: "active",
 			LifecycleProtocol: protocolVersion,

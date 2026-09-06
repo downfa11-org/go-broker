@@ -276,12 +276,11 @@ func (ch *CommandHandler) handleEndTxn(cmd string) string {
 	tx := current
 	if current.State == transaction.StateOpen {
 		var err error
-		tx, err = ch.TxnManager.PrepareCommit(txnID, producerID, epoch)
+		tx, err = ch.prepareTransaction(current)
 		if err != nil {
-			return fmt.Sprintf("ERROR: transaction_prepare_failed reason=%q", err.Error())
+			return fmt.Sprintf("ERROR: transaction_sync_failed reason=%q", err.Error())
 		}
-	}
-	if tx.State == transaction.StateCommitting {
+	} else if tx.State == transaction.StateCommitting {
 		if err := ch.syncTransactionState(txnID); err != nil {
 			return fmt.Sprintf("ERROR: transaction_sync_failed reason=%q", err.Error())
 		}
@@ -372,12 +371,12 @@ func (ch *CommandHandler) applyTransaction(tx *transaction.Transaction) error {
 		if err := ch.appendTransactionMarkers(tx, types.TransactionMarkerCommit); err != nil {
 			return err
 		}
-		if err := ch.commitTransactionOffsets(tx.Offsets); err != nil {
+		if err := ch.commitPreparedTransactionOffsets(tx); err != nil {
 			return err
 		}
 		return nil
 	}
-	return ch.withTransactionOffsetFences(tx.Offsets, apply)
+	return apply()
 }
 
 func (ch *CommandHandler) validateTransaction(tx *transaction.Transaction) error {
@@ -394,36 +393,14 @@ func (ch *CommandHandler) validateTransaction(tx *transaction.Transaction) error
 		}
 	}
 	for _, op := range tx.Offsets {
+		if tx.State == transaction.StateCommitting && op.RegistrationEpoch != 0 {
+			continue
+		}
 		if err := ch.validateTransactionOffset(op, true); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-type transactionOffsetFence struct {
-	Group      string
-	Member     string
-	Generation int
-	Partitions []int
-}
-
-func (ch *CommandHandler) withTransactionOffsetFences(ops []transaction.OffsetOperation, apply func() error) error {
-	if ch.Coordinator == nil || len(ops) == 0 || ch.isDistributed() {
-		return apply()
-	}
-	fences := buildTransactionOffsetFences(ops)
-	var run func(int) error
-	run = func(idx int) error {
-		if idx >= len(fences) {
-			return apply()
-		}
-		fence := fences[idx]
-		return ch.Coordinator.WithOwnershipFence(fence.Group, fence.Member, fence.Generation, fence.Partitions, func() error {
-			return run(idx + 1)
-		})
-	}
-	return run(0)
 }
 
 func (ch *CommandHandler) validateTransactionOffset(op transaction.OffsetOperation, checkRegression bool) error {
@@ -453,32 +430,6 @@ func (ch *CommandHandler) validateTransactionOffset(op transaction.OffsetOperati
 		}
 	}
 	return nil
-}
-func buildTransactionOffsetFences(ops []transaction.OffsetOperation) []transactionOffsetFence {
-	type key struct {
-		group      string
-		member     string
-		generation int
-	}
-	index := make(map[key]int)
-	partitionSeen := make(map[key]map[int]struct{})
-	fences := make([]transactionOffsetFence, 0)
-	for _, op := range ops {
-		k := key{group: op.Group, member: op.Member, generation: op.Generation}
-		idx, ok := index[k]
-		if !ok {
-			idx = len(fences)
-			index[k] = idx
-			partitionSeen[k] = make(map[int]struct{})
-			fences = append(fences, transactionOffsetFence{Group: op.Group, Member: op.Member, Generation: op.Generation})
-		}
-		if _, ok := partitionSeen[k][op.Partition]; ok {
-			continue
-		}
-		partitionSeen[k][op.Partition] = struct{}{}
-		fences[idx].Partitions = append(fences[idx].Partitions, op.Partition)
-	}
-	return fences
 }
 func (ch *CommandHandler) appendTransactionMarkers(tx *transaction.Transaction, marker string) error {
 	if tx == nil || len(tx.Messages) == 0 {

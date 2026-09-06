@@ -30,12 +30,13 @@ type MessageOperation struct {
 }
 
 type OffsetOperation struct {
-	Topic      string
-	Group      string
-	Member     string
-	Generation int
-	Partition  int
-	Offset     uint64
+	RegistrationEpoch uint64
+	Topic             string
+	Group             string
+	Member            string
+	Generation        int
+	Partition         int
+	Offset            uint64
 }
 
 type Transaction struct {
@@ -282,6 +283,26 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
 	return nil
+}
+
+func (m *Manager) BuildPreparedSnapshot(id, producer string, epoch int64) (*Snapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tx, ok := m.txns[id]
+	if !ok {
+		return nil, fmt.Errorf("transaction %s not found", id)
+	}
+	if err := validateOwner(tx, producer, epoch); err != nil {
+		return nil, err
+	}
+	if tx.State != StateOpen {
+		return nil, fmt.Errorf("transaction %s is %s", id, tx.State)
+	}
+	snap := snapshot(tx)
+	snap.State = StateCommitting
+	snap.Revision++
+	snap.UpdatedAt = time.Now()
+	return snap, nil
 }
 
 func (m *Manager) PrepareCommit(id, producer string, epoch int64) (*Transaction, error) {

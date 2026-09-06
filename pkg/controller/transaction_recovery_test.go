@@ -285,7 +285,7 @@ func TestEndTxnRetriesDurableCommittingSyncBeforeApply(t *testing.T) {
 		syncCalls++
 		tx, err := ch.TxnManager.Status(txnID)
 		require.NoError(t, err)
-		require.Equal(t, transaction.StateCommitting, tx.State)
+		require.Equal(t, transaction.StateOpen, tx.State)
 		if syncCalls == 1 {
 			return errors.New("injected durable sync failure")
 		}
