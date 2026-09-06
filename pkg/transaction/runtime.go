@@ -9,6 +9,7 @@ type RuntimeSnapshot struct {
 	Expired                int
 	OldestActiveAgeSeconds float64
 	RecoveryReady          bool
+	RetainedBytes          int64
 }
 
 func (m *Manager) RuntimeSnapshot() RuntimeSnapshot {
@@ -20,6 +21,7 @@ func (m *Manager) RuntimeSnapshot() RuntimeSnapshot {
 	now := time.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	result.RetainedBytes = m.totalBytes
 	for _, tx := range m.txns {
 		if tx == nil {
 			continue

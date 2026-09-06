@@ -32,11 +32,10 @@ func (ch *CommandHandler) handleInitProducerID(cmd string) string {
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
-	previousState := ch.TxnManager.ExportState()
-	previousSnap, hadPrevious := previousState[txnID]
+	previousSnap, hadPrevious := ch.snapshotTransaction(txnID)
 	producerID, epoch, err := ch.TxnManager.InitProducer(txnID)
 	if err != nil {
-		return fmt.Sprintf("ERROR: init_producer_failed reason=%q", err.Error())
+		return transactionMutationError("init_producer_failed", err)
 	}
 	if err := ch.syncTransactionState(txnID); err != nil {
 		if hadPrevious {
@@ -75,7 +74,7 @@ func (ch *CommandHandler) handleBeginTxn(cmd string) string {
 		if errors.Is(err, transaction.ErrProducerReinitializationRequired) {
 			return fmt.Sprintf("ERROR: producer_reinitialization_required transactional_id=%s epoch=%d", txnID, epoch)
 		}
-		return fmt.Sprintf("ERROR: transaction_begin_failed reason=%q", err.Error())
+		return transactionMutationError("transaction_begin_failed", err)
 	}
 	if err := ch.syncTransactionState(txnID); err != nil {
 		ch.restoreTransaction(txnID, previousSnap, hadPrevious)
@@ -145,7 +144,7 @@ func (ch *CommandHandler) handleTxnPublish(cmd string, ctx ...*ClientContext) st
 	}
 	previousSnap, hadPrevious := ch.snapshotTransaction(txnID)
 	if err := ch.TxnManager.AddMessage(txnID, producerID, epoch, transaction.MessageOperation{Topic: topicName, Partition: partition, Message: msg}); err != nil {
-		return fmt.Sprintf("ERROR: transaction_publish_failed reason=%q", err.Error())
+		return transactionMutationError("transaction_publish_failed", err)
 	}
 	if err := ch.syncTransactionState(txnID); err != nil {
 		ch.restoreTransaction(txnID, previousSnap, hadPrevious)
@@ -208,7 +207,7 @@ func (ch *CommandHandler) handleSendOffsetsToTxn(cmd string) string {
 	}
 	previousSnap, hadPrevious := ch.snapshotTransaction(txnID)
 	if err := ch.TxnManager.AddOffsets(txnID, producerID, epoch, ops); err != nil {
-		return fmt.Sprintf("ERROR: transaction_offsets_failed reason=%q", err.Error())
+		return transactionMutationError("transaction_offsets_failed", err)
 	}
 	if err := ch.syncTransactionState(txnID); err != nil {
 		ch.restoreTransaction(txnID, previousSnap, hadPrevious)

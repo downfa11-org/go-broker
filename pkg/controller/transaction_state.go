@@ -1,11 +1,19 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/cursus-io/cursus/pkg/transaction"
 )
+
+func transactionMutationError(code string, err error) string {
+	if errors.Is(err, transaction.ErrLimitExceeded) {
+		return fmt.Sprintf("ERROR: transaction_limit_exceeded reason=%q", err.Error())
+	}
+	return fmt.Sprintf("ERROR: %s reason=%q", code, err.Error())
+}
 
 func (ch *CommandHandler) snapshotTransaction(txnID string) (*transaction.Snapshot, bool) {
 	return ch.TxnManager.SnapshotByID(txnID)

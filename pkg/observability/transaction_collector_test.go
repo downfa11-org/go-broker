@@ -20,6 +20,7 @@ func TestCollectorExportsTransactionState(t *testing.T) {
 		Expired:                3,
 		OldestActiveAgeSeconds: 42,
 		RecoveryReady:          true,
+		RetainedBytes:          4096,
 	}})
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collector)
@@ -32,4 +33,5 @@ func TestCollectorExportsTransactionState(t *testing.T) {
 	assertGauge(t, families, "cursus_transactions", map[string]string{"state": "committing"}, 1)
 	assertGauge(t, families, "cursus_transactions_expired", nil, 3)
 	assertGauge(t, families, "cursus_transaction_oldest_active_seconds", nil, 42)
+	assertGauge(t, families, "cursus_transaction_retained_bytes", nil, 4096)
 }

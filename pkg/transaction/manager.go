@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +72,9 @@ type Manager struct {
 	mu         sync.Mutex
 	txns       map[string]*Transaction
 	expiration time.Duration
+	limits     Limits
+	sizes      map[string]int64
+	totalBytes int64
 }
 
 func NewManager() *Manager {
@@ -81,7 +85,8 @@ func NewManagerWithExpiration(expiration time.Duration) *Manager {
 	if expiration <= 0 {
 		expiration = 7 * 24 * time.Hour
 	}
-	return &Manager{txns: make(map[string]*Transaction), expiration: expiration}
+	return &Manager{txns: make(map[string]*Transaction), expiration: expiration,
+		limits: DefaultLimits(), sizes: make(map[string]int64)}
 }
 
 func (m *Manager) PruneExpired(now time.Time) int {
@@ -98,18 +103,19 @@ func (m *Manager) pruneExpiredLocked(now time.Time) int {
 	removed := 0
 	for id, tx := range m.txns {
 		if tx == nil {
-			delete(m.txns, id)
+			m.deleteLocked(id)
 			removed++
 			continue
 		}
 		if tx.Expired {
 			if tx.UpdatedAt.Before(cutoff) {
-				delete(m.txns, id)
+				m.deleteLocked(id)
 				removed++
 			}
 			continue
 		}
 		if expireTransactionLocked(tx, cutoff, now) {
+			m.recordSizeLocked(id, transactionCharge(tx))
 			removed++
 		}
 	}
@@ -136,12 +142,15 @@ func (m *Manager) InitProducer(id string) (string, int64, error) {
 	if id == "" {
 		return "", 0, fmt.Errorf("missing transaction id")
 	}
+	if len(id) > 1024 {
+		return "", 0, fmt.Errorf("%w: transactional id exceeds 1024 bytes", ErrLimitExceeded)
+	}
+	id = strings.Clone(id)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
 	previous := m.txns[id]
-	expireTransactionLocked(previous, now.Add(-m.expiration), now)
 
 	producer := producerIDForTransactionalID(id)
 	epoch := int64(0)
@@ -157,7 +166,7 @@ func (m *Manager) InitProducer(id string) (string, int64, error) {
 		revision = tx.Revision + 1
 	}
 
-	m.txns[id] = &Transaction{
+	next := &Transaction{
 		ID:        id,
 		Producer:  producer,
 		Epoch:     epoch,
@@ -167,6 +176,10 @@ func (m *Manager) InitProducer(id string) (string, int64, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	if err := m.admissionErrorLocked(id, transactionCharge(next), 0, 0); err != nil {
+		return "", 0, err
+	}
+	m.replaceLocked(id, next)
 	return producer, epoch, nil
 }
 func (m *Manager) Begin(id, producer string, epoch int64) error {
@@ -201,9 +214,9 @@ func (m *Manager) Begin(id, producer string, epoch int64) error {
 	}
 
 	now := time.Now()
-	m.txns[id] = &Transaction{
-		ID:        id,
-		Producer:  producer,
+	next := &Transaction{
+		ID:        tx.ID,
+		Producer:  tx.Producer,
 		Epoch:     epoch,
 		Revision:  tx.Revision + 1,
 		Ready:     false,
@@ -211,6 +224,10 @@ func (m *Manager) Begin(id, producer string, epoch int64) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	if err := m.admissionErrorLocked(id, transactionCharge(next), 0, 0); err != nil {
+		return err
+	}
+	m.replaceLocked(id, next)
 	return nil
 }
 
@@ -225,7 +242,12 @@ func (m *Manager) AddMessage(id, producer string, epoch int64, op MessageOperati
 	if err := validateOwner(tx, producer, epoch); err != nil {
 		return err
 	}
-	tx.Messages = append(tx.Messages, op)
+	size := m.sizes[id] + messageCharge(op)
+	if err := m.admissionErrorLocked(id, size, len(tx.Messages)+1, len(tx.Offsets)); err != nil {
+		return err
+	}
+	tx.Messages = append(tx.Messages, ownMessageOperation(op))
+	m.recordSizeLocked(id, size)
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
 	return nil
@@ -246,6 +268,9 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 	if err := validateOwner(tx, producer, epoch); err != nil {
 		return err
 	}
+	if len(offsets) > m.limits.Offsets || len(tx.Offsets) > m.limits.Offsets {
+		return fmt.Errorf("%w: offset request count=%d maximum=%d", ErrLimitExceeded, len(offsets), m.limits.Offsets)
+	}
 	scope := offsets[0]
 	if len(tx.Offsets) > 0 {
 		scope = tx.Offsets[0]
@@ -259,10 +284,12 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 		}
 	}
 
+	next := append([]OffsetOperation(nil), tx.Offsets...)
+	size := m.sizes[id]
 	for _, op := range offsets {
 		updated := false
-		for i := range tx.Offsets {
-			current := &tx.Offsets[i]
+		for i := range next {
+			current := &next[i]
 			if current.Topic != op.Topic || current.Group != op.Group || current.Partition != op.Partition {
 				continue
 			}
@@ -272,14 +299,25 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 					op.Topic, op.Group, op.Partition, current.Offset, op.Offset,
 				)
 			}
+			size += offsetCharge(op) - offsetCharge(*current)
 			*current = op
 			updated = true
 			break
 		}
 		if !updated {
-			tx.Offsets = append(tx.Offsets, op)
+			next = append(next, op)
+			size += offsetCharge(op)
 		}
 	}
+	if err := m.admissionErrorLocked(id, size, len(tx.Messages), len(next)); err != nil {
+		return err
+	}
+	for i := range next {
+		op := &next[i]
+		op.Topic, op.Group, op.Member = strings.Clone(op.Topic), strings.Clone(op.Group), strings.Clone(op.Member)
+	}
+	tx.Offsets = next
+	m.recordSizeLocked(id, size)
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
 	return nil
@@ -373,6 +411,7 @@ func (m *Manager) Abort(id, producer string, epoch int64) error {
 	tx.State = StateAborted
 	tx.Messages = nil
 	tx.Offsets = nil
+	m.recordSizeLocked(id, transactionCharge(tx))
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
 	return nil
@@ -509,8 +548,10 @@ func (m *Manager) ImportState(state map[string]*Snapshot) error {
 	defer m.mu.Unlock()
 
 	m.txns = make(map[string]*Transaction, len(state))
+	m.sizes = make(map[string]int64, len(state))
+	m.totalBytes = 0
 	for id, snap := range state {
-		m.txns[id] = transactionFromSnapshot(snap)
+		m.replaceLocked(id, transactionFromSnapshot(snap))
 	}
 	return nil
 }
@@ -521,7 +562,7 @@ func (m *Manager) ApplySnapshot(snap *Snapshot) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.txns[snap.ID] = transactionFromSnapshot(snap)
+	m.replaceLocked(snap.ID, transactionFromSnapshot(snap))
 }
 
 func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
@@ -533,7 +574,7 @@ func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
 
 	current, ok := m.txns[snap.ID]
 	if !ok || snapshotIsNewer(current, snap) {
-		m.txns[snap.ID] = transactionFromSnapshot(snap)
+		m.replaceLocked(snap.ID, transactionFromSnapshot(snap))
 		return nil
 	}
 	if snapshotsEqual(current, snap) {
@@ -629,7 +670,7 @@ func snapshotsEqual(current *Transaction, incoming *Snapshot) bool {
 func (m *Manager) Delete(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.txns, id)
+	m.deleteLocked(id)
 }
 
 func (m *Manager) activeLocked(id string) (*Transaction, error) {
