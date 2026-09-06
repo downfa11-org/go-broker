@@ -2,6 +2,7 @@ package e2e_benchmark
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -249,38 +250,77 @@ func composeUp(t *testing.T, file string) {
 	}
 }
 
-func waitForContainerExit(t *testing.T, file, service, container string, timeout time.Duration) (string, bool) {
-	deadline := time.After(timeout)
+func benchmarkContainerExit(data []byte) (bool, error) {
+	var state struct {
+		Status    string
+		ExitCode  *int
+		OOMKilled *bool
+		Error     string
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false, fmt.Errorf("decode container state: %w", err)
+	}
+	if state.ExitCode == nil || state.OOMKilled == nil {
+		return false, fmt.Errorf("container state is missing exit code or OOM status")
+	}
+	if *state.OOMKilled || state.Error != "" {
+		return false, fmt.Errorf("container failed: status=%s exit_code=%d oom_killed=%t error=%s", state.Status, *state.ExitCode, *state.OOMKilled, state.Error)
+	}
+	switch state.Status {
+	case "exited":
+		if *state.ExitCode != 0 {
+			return false, fmt.Errorf("container exited with code %d", *state.ExitCode)
+		}
+		return true, nil
+	case "created", "running", "paused", "restarting":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected container state %q", state.Status)
+	}
+}
+
+func waitForContainerExit(t *testing.T, file, service, container string, timeout time.Duration) (string, error) {
+	waitCtx, stop := context.WithTimeout(context.Background(), timeout)
+	defer stop()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	var lastInspectErr error
 
 	for {
 		select {
-		case <-deadline:
+		case <-waitCtx.Done():
 			// Dump logs for debugging (compose logs uses service name)
 			ctx, cancel := context.WithTimeout(context.Background(), dockerCommandTimeout)
 			logsCmd := runComposeContext(ctx, "-f", file, "logs", "--tail", "50", service)
 			logs, _ := logsCmd.CombinedOutput()
 			cancel()
 			t.Logf("Timeout waiting for %s. Last logs:\n%s", container, string(logs))
-			return string(logs), false
+			return string(logs), fmt.Errorf("waiting for %s: %w (last inspect error: %v)", container, waitCtx.Err(), lastInspectErr)
 		case <-ticker.C:
 			// Check if container has exited (docker inspect uses container name)
-			ctx, cancel := context.WithTimeout(context.Background(), dockerCommandTimeout)
+			ctx, cancel := context.WithTimeout(waitCtx, dockerCommandTimeout)
 			// #nosec G204 -- container is a fixed E2E container name selected by the caller.
-			inspectCmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Status}}", container)
+			inspectCmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{json .State}}", container)
 			out, err := inspectCmd.Output()
 			cancel()
 			if err != nil {
+				lastInspectErr = err
 				continue
 			}
-			status := strings.TrimSpace(string(out))
-			if status == "exited" {
+			lastInspectErr = nil
+			completed, stateErr := benchmarkContainerExit(out)
+			if completed || stateErr != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), dockerCommandTimeout)
 				logsCmd := runComposeContext(ctx, "-f", file, "logs", service)
-				logs, _ := logsCmd.CombinedOutput()
+				logs, logErr := logsCmd.CombinedOutput()
 				cancel()
-				return string(logs), true
+				if stateErr != nil {
+					return string(logs), fmt.Errorf("%s: %w", container, stateErr)
+				}
+				if logErr != nil {
+					return string(logs), fmt.Errorf("read %s benchmark logs: %w", container, logErr)
+				}
+				return string(logs), nil
 			}
 		}
 	}
@@ -395,17 +435,17 @@ func TestStandaloneBenchmark(t *testing.T) {
 
 	// Wait for publisher to finish
 	t.Log("Waiting for publisher to complete...")
-	pubLogs, pubDone := waitForContainerExit(t, composeFile("../docker-compose.yml"), "publisher", "bench-publisher", benchmarkTimeout)
-	if !pubDone {
-		t.Fatal("Publisher did not complete within timeout")
+	pubLogs, err := waitForContainerExit(t, composeFile("../docker-compose.yml"), "publisher", "bench-publisher", benchmarkTimeout)
+	if err != nil {
+		t.Fatalf("Publisher failed: %v\n%s", err, lastLines(pubLogs, 40))
 	}
 	assertBenchmarkSuccess(t, pubLogs, "Publisher")
 
 	// Wait for consumer to finish
 	t.Log("Waiting for consumer to complete...")
-	consLogs, consDone := waitForContainerExit(t, composeFile("../docker-compose.yml"), "consumer", "bench-consumer", benchmarkTimeout)
-	if !consDone {
-		t.Fatal("Consumer did not complete within timeout")
+	consLogs, err := waitForContainerExit(t, composeFile("../docker-compose.yml"), "consumer", "bench-consumer", benchmarkTimeout)
+	if err != nil {
+		t.Fatalf("Consumer failed: %v\n%s", err, lastLines(consLogs, 40))
 	}
 	assertBenchmarkSuccess(t, consLogs, "Consumer")
 }
@@ -427,17 +467,17 @@ func TestClusterBenchmark(t *testing.T) {
 
 	// Wait for publisher to finish
 	t.Log("Waiting for publisher to complete...")
-	pubLogs, pubDone := waitForContainerExit(t, composeFile("../cluster/docker-compose.yml"), "publisher", "broker-publisher", benchmarkTimeout)
-	if !pubDone {
-		t.Fatal("Publisher did not complete within timeout")
+	pubLogs, err := waitForContainerExit(t, composeFile("../cluster/docker-compose.yml"), "publisher", "broker-publisher", benchmarkTimeout)
+	if err != nil {
+		t.Fatalf("Publisher failed: %v\n%s", err, lastLines(pubLogs, 40))
 	}
 	assertBenchmarkSuccess(t, pubLogs, "Publisher")
 
 	// Wait for consumer to finish
 	t.Log("Waiting for consumer to complete...")
-	consLogs, consDone := waitForContainerExit(t, composeFile("../cluster/docker-compose.yml"), "consumer", "broker-consumer", benchmarkTimeout)
-	if !consDone {
-		t.Fatal("Consumer did not complete within timeout")
+	consLogs, err := waitForContainerExit(t, composeFile("../cluster/docker-compose.yml"), "consumer", "broker-consumer", benchmarkTimeout)
+	if err != nil {
+		t.Fatalf("Consumer failed: %v\n%s", err, lastLines(consLogs, 40))
 	}
 	assertBenchmarkSuccess(t, consLogs, "Consumer")
 }
