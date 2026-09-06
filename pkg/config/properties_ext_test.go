@@ -5,6 +5,7 @@ import (
 
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/util"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -32,6 +33,10 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("RAFT_SNAPSHOT_INTERVAL_MS", "250")
 	t.Setenv("RAFT_SNAPSHOT_THRESHOLD", "16")
 	t.Setenv("RAFT_TRAILING_LOGS", "0")
+	t.Setenv("MAX_INFLIGHT_REQUESTS", "3")
+	t.Setenv("MAX_REQUEST_BYTES", "4096")
+	t.Setenv("MAX_INTERNAL_INFLIGHT_REQUESTS", "5")
+	t.Setenv("MAX_INTERNAL_REQUEST_BYTES", "8192")
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -41,6 +46,10 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	if cfg.BrokerPort != 9999 {
 		t.Errorf("Expected BrokerPort 9999 from env, got %d", cfg.BrokerPort)
 	}
+	require.Equal(t, 3, cfg.MaxInFlightRequests)
+	require.Equal(t, 4096, cfg.MaxRequestBytes)
+	require.Equal(t, 5, cfg.MaxInternalInFlightRequests)
+	require.Equal(t, 8192, cfg.MaxInternalRequestBytes)
 	if cfg.RetentionHours != 24 {
 		t.Errorf("Expected RetentionHours 24 from env, got %d", cfg.RetentionHours)
 	}

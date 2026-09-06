@@ -16,6 +16,7 @@ import (
 	"github.com/cursus-io/cursus/pkg/stream"
 	"github.com/cursus-io/cursus/pkg/topic"
 	"github.com/cursus-io/cursus/pkg/transaction"
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -44,6 +45,9 @@ type CommandHandler struct {
 	partitionWriteLocks      sync.Map // map[string]*sync.Mutex
 	partitionPreparedEpochs  sync.Map // map[string]partitionLeadershipFence
 	replication              *partitionReplicationCoordinator
+	requestBudgetOnce        sync.Once
+	clientRequestBudget      *wire.FrameBudget
+	internalRequestBudget    *wire.FrameBudget
 }
 
 func (ch *CommandHandler) transactionStateLock(transactionalID string) *sync.Mutex {

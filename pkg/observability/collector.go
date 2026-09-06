@@ -53,14 +53,15 @@ type ReadinessSource interface {
 
 // Collector exports scrape-time state rather than retaining stale gauge labels.
 type Collector struct {
-	topics       topicSource
-	groups       groupSource
-	disk         diskSource
-	streams      streamSource
-	cluster      clusterSource
-	readiness    ReadinessSource
-	descriptors  []*prometheus.Desc
-	transactions transactionSource
+	topics         topicSource
+	groups         groupSource
+	disk           diskSource
+	streams        streamSource
+	cluster        clusterSource
+	readiness      ReadinessSource
+	descriptors    []*prometheus.Desc
+	transactions   transactionSource
+	requestBudgets map[string]*wire.FrameBudget
 
 	observationMu       sync.Mutex
 	observationFailures map[observationFailureKey]uint64
@@ -125,6 +126,11 @@ type Collector struct {
 	transactionExpired              *prometheus.Desc
 	transactionOldestActive         *prometheus.Desc
 	transactionRetainedBytes        *prometheus.Desc
+	requestInFlight                 *prometheus.Desc
+	requestInFlightLimit            *prometheus.Desc
+	requestBytes                    *prometheus.Desc
+	requestByteLimit                *prometheus.Desc
+	requestRejected                 *prometheus.Desc
 }
 
 type observationFailureKey struct {
@@ -212,6 +218,11 @@ func NewCollector(topics topicSource, groups groupSource, diskState diskSource, 
 		transactionExpired:              prometheus.NewDesc("cursus_transactions_expired", "Expired transaction identities awaiting replacement or compaction.", nil, nil),
 		transactionOldestActive:         prometheus.NewDesc("cursus_transaction_oldest_active_seconds", "Age of the oldest open or committing transaction.", nil, nil),
 		transactionRetainedBytes:        prometheus.NewDesc("cursus_transaction_retained_bytes", "Conservative admission charge for retained transaction state; not process RSS.", nil, nil),
+		requestInFlight:                 prometheus.NewDesc("cursus_request_inflight", "Admitted requests holding a reservation.", []string{"listener"}, nil),
+		requestInFlightLimit:            prometheus.NewDesc("cursus_request_inflight_limit", "Maximum admitted requests.", []string{"listener"}, nil),
+		requestBytes:                    prometheus.NewDesc("cursus_request_reserved_bytes", "Encoded plus decoded request bytes reserved; not process RSS.", []string{"listener"}, nil),
+		requestByteLimit:                prometheus.NewDesc("cursus_request_byte_limit", "Request byte reservation budget.", []string{"listener"}, nil),
+		requestRejected:                 prometheus.NewDesc("cursus_request_rejected_total", "Requests rejected before payload allocation due to admission limits.", []string{"listener"}, nil),
 		observationFailures:             make(map[observationFailureKey]uint64),
 	}
 	if len(transactions) > 0 {
@@ -238,6 +249,7 @@ func NewCollector(topics topicSource, groups groupSource, diskState diskSource, 
 		c.partitionInSync, c.partitionLeaderEpoch, c.partitionLeader, c.isrCatchupProofs,
 		c.transactionRecovery, c.transactionStates, c.transactionExpired, c.transactionOldestActive,
 		c.transactionRetainedBytes,
+		c.requestInFlight, c.requestInFlightLimit, c.requestBytes, c.requestByteLimit, c.requestRejected,
 	}
 	return c
 }
@@ -304,6 +316,20 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectWire(ch)
 	c.collectCluster(ch)
 	c.collectTransactions(ch)
+	for listener, budget := range c.requestBudgets {
+		state := budget.Snapshot()
+		ch <- gauge(c.requestInFlight, float64(state.Frames), listener)
+		ch <- gauge(c.requestInFlightLimit, float64(state.MaxFrames), listener)
+		ch <- gauge(c.requestBytes, float64(state.Bytes), listener)
+		ch <- gauge(c.requestByteLimit, float64(state.MaxBytes), listener)
+		ch <- prometheus.MustNewConstMetric(c.requestRejected, prometheus.CounterValue, float64(state.Rejected), listener)
+	}
+}
+
+// WithRequestBudgets configures admission metrics before collector registration.
+func (c *Collector) WithRequestBudgets(client, internal *wire.FrameBudget) *Collector {
+	c.requestBudgets = map[string]*wire.FrameBudget{"client": client, "internal": internal}
+	return c
 }
 
 func (c *Collector) collectTransactions(ch chan<- prometheus.Metric) {

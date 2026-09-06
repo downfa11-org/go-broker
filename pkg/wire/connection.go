@@ -65,14 +65,27 @@ func ClientHandshake(conn net.Conn, compressions []Compression) (*Connection, er
 }
 
 func ServerHandshake(conn net.Conn, supported []Compression) (*Connection, error) {
+	return ServerHandshakeWithAdmission(conn, supported, nil)
+}
+
+func ServerHandshakeWithAdmission(conn net.Conn, supported []Compression, admit FrameAdmission) (*Connection, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("wire v2 server connection is nil")
 	}
 	plain, _ := NewCodec(CompressionNone)
-	frame, err := plain.ReadFrame(conn)
+	frame, release, err := plain.ReadFrameWithAdmission(conn, func(frame Frame, encoded, decoded uint32) (func(), error) {
+		if frame.Kind != KindNegotiationRequest || frame.Command != CommandNegotiate || encoded > 1024 || decoded > 1024 {
+			return nil, fmt.Errorf("invalid Wire v2 negotiation header or payload size")
+		}
+		if admit != nil {
+			return admit(frame, encoded, decoded)
+		}
+		return nil, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read Wire v2 negotiation: %w", err)
 	}
+	defer release()
 	if frame.Kind != KindNegotiationRequest || frame.Command != CommandNegotiate {
 		return nil, fmt.Errorf("first frame must be a Wire v2 negotiation request")
 	}
@@ -108,12 +121,20 @@ func (c *Connection) Compression() Compression {
 }
 
 func (c *Connection) ReadFrame() (Frame, error) {
+	frame, release, err := c.ReadFrameWithAdmission(nil)
+	if release != nil {
+		release()
+	}
+	return frame, err
+}
+
+func (c *Connection) ReadFrameWithAdmission(admit FrameAdmission) (Frame, func(), error) {
 	if c == nil || c.conn == nil || c.codec == nil {
-		return Frame{}, fmt.Errorf("wire v2 connection is not initialized")
+		return Frame{}, nil, fmt.Errorf("wire v2 connection is not initialized")
 	}
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
-	return c.codec.ReadFrame(c.conn)
+	return c.codec.ReadFrameWithAdmission(c.conn, admit)
 }
 
 func (c *Connection) WriteFrame(frame Frame) error {

@@ -64,6 +64,8 @@ Every message is a self-delimiting Wire v2 frame with a fixed 32-byte big-endian
 - **Checksum**: CRC32C (Castagnoli) over the encoded payload
 - Application requests and responses require a non-zero request ID. A response or stream frame uses the request's ID and command.
 
+The broker also applies process-local request count and byte admission limits before allocating an incoming body. Each reservation charges the 32-byte header plus encoded and decoded lengths. A legal wire frame can exceed this lower operational budget. Admission exhaustion closes the connection without executing the rejected command or sending a success response; clients must not infer the outcome of earlier requests from a transport failure. Client and internal listener budgets are independent. See [request admission configuration](user-guide/configuration.md#request-admission).
+
 ### Compression
 
 Compression is selected by the required connection handshake. Negotiation frames are always uncompressed; every later frame explicitly identifies the selected algorithm in its flags.
@@ -99,6 +101,8 @@ Recv: header + encoded payload → CRC32C verify → decompress → decoded payl
 ### Required Binary Handshake
 
 The first frame must be an uncompressed negotiation request with command `NEGOTIATE`. Its payload is `minimum_version (u16)`, `maximum_version (u16)`, `compression_count (u16)`, followed by that many compression IDs. The broker selects the first mutually supported compression and returns an uncompressed negotiation response containing `version (u16)` and `compression (u8)`. Version 2 must fall inside the requested range. There are no application-level `PROTOCOL_INFO`, feature flags, or text `NEGOTIATE` commands.
+
+The broker rejects negotiation payloads larger than 1024 bytes from the header, before body allocation. Negotiation also uses the listener's request admission pool.
 
 ### Request Encoding
 

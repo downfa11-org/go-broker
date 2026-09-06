@@ -248,6 +248,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 	}
 
 	runtimeCollector := observability.NewCollector(tm, cd, dm, sm, cc, healthState, globalCH.TxnManager)
+	runtimeCollector.WithRequestBudgets(globalCH.RequestBudget(false), globalCH.RequestBudget(true))
 	if cfg.EnableExporter {
 		metricsServer, startErr := metrics.StartMetricsServer(cfg.ExporterPort, runtimeCollector)
 		if startErr != nil {
@@ -439,7 +440,8 @@ func handleConnWithContext(ctx context.Context, conn net.Conn, cmdHandler *contr
 	if err := conn.SetDeadline(lastActivity.Add(idleTimeout)); err != nil {
 		return
 	}
-	wireConnection, responseConn, err := negotiateServerConnection(conn)
+	admit := cmdHandler.RequestBudget(cmdCtx.Internal).Reserve
+	wireConnection, responseConn, err := negotiateServerConnectionWithAdmission(conn, admit)
 	if err != nil {
 		return
 	}
@@ -461,7 +463,7 @@ func handleConnWithContext(ctx context.Context, conn net.Conn, cmdHandler *contr
 			return
 		}
 
-		request, err := readWireRequest(wireConnection)
+		request, release, err := readWireRequestWithAdmission(wireConnection, admit)
 		if err != nil {
 			select {
 			case <-clientCtx.Done():
@@ -475,11 +477,20 @@ func handleConnWithContext(ctx context.Context, conn net.Conn, cmdHandler *contr
 		}
 
 		lastActivity = time.Now()
+		if clientCtx.Err() != nil {
+			release()
+			return
+		}
 		if err := conn.SetWriteDeadline(lastActivity.Add(time.Minute)); err != nil {
+			release()
 			return
 		}
 		responseConn.setRequest(request)
-		shouldExit, err := processMessage(request.Payload, cmdHandler, cmdCtx, responseConn)
+		shouldExit, err := func() (bool, error) {
+			defer release()
+			return processMessage(request.Payload, cmdHandler, cmdCtx, responseConn)
+		}()
+		request.Payload = nil
 		if err != nil {
 			return
 		}
