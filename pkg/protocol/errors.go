@@ -61,7 +61,7 @@ func buildErrorRegistry() map[string]ErrorClassification {
 		"NOT_COORDINATOR", "NOT_LEADER", "NOT_PARTITION_LEADER",
 	)
 	register(ErrorClassAvailability, true,
-		"cluster_metadata_unavailable", "cluster_not_available", "coordinator_not_available", "fsm_not_available",
+		"cluster_metadata_unavailable", "cluster_not_available", "coordinator_not_available", "fsm_not_available", "handler_closed",
 		"insufficient_in_sync_replicas", "leader_election_result_unavailable", "leader_not_found", "no_raft_leader", "offset_manager_not_available", "replication_unavailable", "request_cancelled", "router_not_available",
 		"transaction_abort_marker_failed", "transaction_commit_failed", "transaction_manager_not_available", "transaction_sync_failed",
 	)
