@@ -122,6 +122,16 @@ The chart defaults to 16 client requests / 64 MiB of incoming frame reservations
 
 For a recoverable backup, pause writers, confirm acknowledged operations and offsets, stop brokers gracefully, and snapshot the complete persistence unit. Standalone requires its entire log directory; cluster recovery requires all broker PVCs and their original identities, including Raft state, logs, manifests, HWM/producer checkpoints, transaction decisions and event snapshots. Keep backups immutable and restore into an isolated environment before trusting them. File-by-file live copies are not a consistent backup. No backup deletion or production restore is automated by this chart.
 
+The `full-persistence-backup-restore` CI job stops standalone and three-node cluster test brokers, requires exit status 0, archives each complete log directory, and restores into freshly created containers with the original identities. It compares every archived file's SHA-256, mode and UID/GID before startup, then checks message order, idempotent retries, committed/open transaction recovery, consumer offsets, event snapshots and continued writes. Archive streaming and ownership preservation use [Docker's documented copy semantics](https://docs.docker.com/reference/cli/docker/container/cp/). This tests a cold full-directory backup, not live snapshots or Kubernetes CSI/provider behavior.
+
+Run on a dedicated Docker test host with no existing `broker` or `broker-1` through `broker-3` containers, `test_network`/`cluster_network` networks, or `cursus-backup-restore` Compose project:
+
+```bash
+RUN_E2E_BACKUP_RESTORE=1 go test -v -count=1 -timeout 25m ./test/e2e-cluster -run '^TestFullPersistenceBackupRestore$'
+```
+
+The test refuses to replace pre-existing containers, recreates only its isolated Compose project, and removes its temporary archives on completion. Export and protect production backups separately; never point this test at production storage.
+
 Validate the rendered resources with `go test ./test/helm` and run the deployment CI before promotion. The manual Deployment Validation workflow can repeat recovery drills 1–5 times. These drills recreate test clusters and are not a continuous production-load soak. Kubernetes installation, certificate/CNI behavior, full-volume restore, sustained workload and latency/memory budgets must still be verified on the deployment's real storage/network before declaring it production-ready.
 
 ## Verify
