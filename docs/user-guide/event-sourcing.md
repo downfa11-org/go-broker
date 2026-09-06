@@ -98,13 +98,30 @@ Frame 1 (JSON envelope):
 }
 ```
 
-Frame 2: Binary batch in standard 0xBA7C format containing the two events.
+Frame 2: Wire v2 `CBV2` batch containing the two events.
 
 To read events starting from a specific version:
 
 ```
 READ_STREAM topic=orders key=order-123 from_version=2
 ```
+
+Large streams require pagination. Add `limit=256` (allowed range 1–1024). Each response is also bounded by the 64 MiB Wire v2 frame limit, so a page may contain fewer events than requested. The envelope includes `stream_version`, `has_more`, `next_version`, and `lifecycle_epoch`. While `has_more=true`, request the next page with `from_version=next_version`, the original `through_version=stream_version` and `lifecycle_epoch`, and `snapshot=false`. This pins replay to its initial boundary and detects topic truncation. Do not delete and recreate a topic while clients are replaying it: a new topic may reuse the initial lifecycle epoch. A request without `limit` fails with `stream_page_required` when its complete result cannot fit one default page; it never silently truncates history. Encoding and index/log consistency errors precede the success envelope.
+
+In Go, `ReadStream`/`ReadStreamFrom` return `sdk.ErrStreamPageRequired` rather than partial data when the result spans pages. Use `ReadStreamPage` for an individual bounded page or `WalkStream` for incremental processing at a fixed version:
+
+```go
+err := store.WalkStream("order-123", 1, func(page *sdk.StreamData) error {
+    for _, event := range page.Events {
+        if err := applyEvent(event); err != nil {
+            return err
+        }
+    }
+    return nil
+})
+```
+
+Version `0` allows an initial snapshot; positive versions request event history without snapshot skipping. `AggregateRepository.Load` and `sdk.Replay` use page visitors when the store supports them. Callbacks run after a page has been validated; a later error does not roll back callbacks from earlier pages. Do not retain all pages if bounded replay memory is required. Update brokers before using the new page APIs; clients reject responses without the page identity/boundary fields.
 
 ---
 

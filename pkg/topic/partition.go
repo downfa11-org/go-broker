@@ -803,6 +803,9 @@ func (p *Partition) readCommittedScanRange(offset, scanLimit, committedHWM uint6
 	for current < scanLimit && len(visible) < maxVisible {
 		remaining := scanLimit - current
 		readMax := scanBatchSize
+		if needed := maxVisible - len(visible); needed < readMax {
+			readMax = needed
+		}
 		if remaining <= math.MaxInt && readMax > int(remaining) { // #nosec G115 -- remaining is bounded by math.MaxInt before narrowing.
 			readMax = int(remaining) // #nosec G115 -- remaining is bounded by math.MaxInt before narrowing.
 		}

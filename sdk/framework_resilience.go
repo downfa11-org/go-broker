@@ -100,29 +100,33 @@ func Replay(store StreamStore, key string, fromVersion uint64, registry *Upcaste
 	if store == nil || handler == nil {
 		return fmt.Errorf("stream store and replay handler are required")
 	}
-	stream, err := store.ReadStream(key)
-	if err != nil {
-		return err
+	if fromVersion == 0 {
+		fromVersion = 1
 	}
-	for _, raw := range stream.Events {
-		event, err := decodeEventEnvelope(raw)
-		if err != nil {
-			return err
+	return walkStoreStream(store, key, fromVersion, func(stream *StreamData) error {
+		if stream.Snapshot != nil && stream.Snapshot.Version >= fromVersion {
+			return fmt.Errorf("stream store omitted requested event history behind a snapshot")
 		}
-		if fromVersion > 0 && event.AggregateVersion < fromVersion {
-			continue
-		}
-		if registry != nil {
-			event, err = registry.Upcast(event)
+		for _, raw := range stream.Events {
+			event, err := decodeEventEnvelope(raw)
 			if err != nil {
 				return err
 			}
+			if fromVersion > 0 && event.AggregateVersion < fromVersion {
+				continue
+			}
+			if registry != nil {
+				event, err = registry.Upcast(event)
+				if err != nil {
+					return err
+				}
+			}
+			if err := handler(event); err != nil {
+				return fmt.Errorf("replay %s v%d: %w", event.EventType, event.AggregateVersion, err)
+			}
 		}
-		if err := handler(event); err != nil {
-			return fmt.Errorf("replay %s v%d: %w", event.EventType, event.AggregateVersion, err)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 type deadline struct {

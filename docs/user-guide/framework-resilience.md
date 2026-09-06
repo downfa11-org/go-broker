@@ -16,7 +16,7 @@ err := sdk.Replay(store, "game-123", 1, registry, func(event sdk.EventEnvelope) 
 })
 ```
 
-Replay reads committed stream events. Upcasters transform old immutable payloads at read time; the original event is never rewritten.
+Replay reads committed stream events through bounded page visitors when supported by the store. With `EventStore`, it pins the first observed stream version, starts at the requested event version without snapshot skipping, and stops on any page or callback error. Earlier callback effects are not rolled back if a later page fails. Upcasters transform old immutable payloads at read time; the original event is never rewritten.
 
 ## Retry and compensation
 

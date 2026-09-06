@@ -64,6 +64,21 @@ type visibilityBenchmarkStorage struct {
 	messages []types.Message
 }
 
+func TestSingleCommittedReadDoesNotPrefetchAnEntireBatch(t *testing.T) {
+	storage := new(MockStorageHandler)
+	storage.On("GetLatestOffset").Return(uint64(0)).Once()
+	storage.On("GetFlushedOffset").Return(uint64(1000)).Once()
+	storage.On("ReadMessages", uint64(0), 1).Return([]types.Message{{Offset: 0, TransactionMarker: types.TransactionMarkerAbort}}, nil).Once()
+	storage.On("ReadMessages", uint64(1), 1).Return([]types.Message{{Offset: 1, Payload: "visible"}}, nil).Once()
+	partition := NewPartition(0, "orders", storage, nil, config.DefaultConfig())
+	partition.SetHWM(1000)
+	messages, err := partition.ReadCommitted(0, 1)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "visible", messages[0].Payload)
+	storage.AssertExpectations(t)
+}
+
 func (s *visibilityBenchmarkStorage) ReadMessages(offset uint64, max int) ([]types.Message, error) {
 	if offset >= uint64(len(s.messages)) || max <= 0 {
 		return nil, nil

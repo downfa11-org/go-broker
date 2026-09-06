@@ -3,10 +3,12 @@ package wire
 import "fmt"
 
 const (
-	ProtocolVersion uint16 = 2
-	HeaderSize             = 32
-	MaxFramePayload        = 64 * 1024 * 1024
-	MaxBatchRecords        = 100_000
+	ProtocolVersion         uint16 = 2
+	HeaderSize                     = 32
+	MaxFramePayload                = 64 * 1024 * 1024
+	MaxBatchRecords                = 100_000
+	DefaultStreamPageEvents        = 256
+	MaxStreamPageEvents            = 1024
 )
 
 type Kind uint8

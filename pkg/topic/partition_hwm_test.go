@@ -542,16 +542,14 @@ func TestPartition_ReadCommittedWaitsForCoordinatorCommitDecision(t *testing.T) 
 	dh.AssertExpectations(t)
 }
 
-func TestPartition_ReadCommittedScansPastSmallVisibleBatchToFindMarker(t *testing.T) {
+func TestPartition_ReadCommittedUsesIndexedMarkerForSmallBatch(t *testing.T) {
 	cfg := config.DefaultConfig()
 	dh := new(MockStorageHandler)
 	dh.On("GetLatestOffset").Return(uint64(0)).Once()
 	dh.On("GetFlushedOffset").Return(uint64(3)).Once()
 	dh.On("GetFirstOffset").Return(uint64(0)).Once()
-	dh.On("ReadMessages", uint64(0), 3).Return([]types.Message{
+	dh.On("ReadMessages", uint64(0), 1).Return([]types.Message{
 		{Offset: 0, Payload: "committed-by-marker", TransactionalID: "tx-commit", TransactionState: types.TransactionStateOpen},
-		{Offset: 1, Payload: "commit-marker", TransactionalID: "tx-commit", TransactionMarker: types.TransactionMarkerCommit},
-		{Offset: 2, Payload: "after"},
 	}, nil).Once()
 
 	p := NewPartition(0, "orders", dh, nil, cfg)

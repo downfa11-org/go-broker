@@ -11,6 +11,7 @@ import (
 
 	"github.com/cursus-io/cursus/pkg/topic"
 	"github.com/cursus-io/cursus/pkg/types"
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -458,6 +459,26 @@ func (h *Handler) HandleReadStream(cmd string, conn net.Conn) {
 	defer h.wg.Done()
 
 	args := parseKeyValueArgs(cmd[len("READ_STREAM "):])
+	limit := wire.DefaultStreamPageEvents
+	paged := args["limit"] != ""
+	if paged {
+		parsed, err := strconv.Atoi(args["limit"])
+		if err != nil || parsed < 1 || parsed > wire.MaxStreamPageEvents {
+			writeError(conn, "invalid_stream_page_limit")
+			return
+		}
+		limit = parsed
+	}
+	throughVersion, err := parseOptionalStreamUint(args, "through_version")
+	if err != nil {
+		writeError(conn, err.Error())
+		return
+	}
+	requestedEpoch, err := parseOptionalStreamUint(args, "lifecycle_epoch")
+	if err != nil {
+		writeError(conn, err.Error())
+		return
+	}
 
 	topicName := args["topic"]
 	if topicName == "" {
@@ -488,6 +509,11 @@ func (h *Handler) HandleReadStream(cmd string, conn net.Conn) {
 		writeError(conn, fmt.Sprintf("event_sourcing_not_enabled topic=%s", topicName))
 		return
 	}
+	lifecycleEpoch := t.Definition().LifecycleEpoch
+	if requestedEpoch != 0 && requestedEpoch != lifecycleEpoch {
+		writeError(conn, "stream_lifecycle_changed")
+		return
+	}
 
 	// Determine the partition for this key.
 	partitionID := t.GetPartitionForMessage(types.Message{Key: key})
@@ -502,26 +528,36 @@ func (h *Handler) HandleReadStream(cmd string, conn net.Conn) {
 		return
 	}
 
-	// Check snapshot: if one exists with version >= fromVersion, use it as base.
-	ss, err := h.getSnapshot(topicName, partitionID)
-	if err != nil {
-		writeError(conn, err.Error())
-		return
-	}
-
-	snap, err := ss.Read(key)
-	if err != nil {
-		writeError(conn, fmt.Sprintf("snapshot_read_failed reason=%q", err.Error()))
-		return
+	var snap *SnapshotData
+	if args["snapshot"] != "false" {
+		if args["snapshot"] != "" && args["snapshot"] != "true" {
+			writeError(conn, "invalid_snapshot_option")
+			return
+		}
+		ss, err := h.getSnapshot(topicName, partitionID)
+		if err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+		snap, err = ss.Read(key)
+		if err != nil {
+			writeError(conn, fmt.Sprintf("snapshot_read_failed reason=%q", err.Error()))
+			return
+		}
 	}
 
 	actualFromVersion := fromVersion
-	if snap != nil && snap.Version >= fromVersion {
+	useSnapshot := snap != nil && snap.Version >= fromVersion && args["snapshot"] != "false" && (throughVersion == 0 || snap.Version <= throughVersion)
+	if useSnapshot {
 		// Start reading from the version after the snapshot.
+		if snap.Version == ^uint64(0) {
+			writeError(conn, "snapshot_version_overflow")
+			return
+		}
 		actualFromVersion = snap.Version + 1
 	}
 
-	entries, err := idx.Lookup(key, actualFromVersion)
+	entries, streamVersion, hasMore, err := idx.LookupPage(key, actualFromVersion, throughVersion, limit)
 	if err != nil {
 		writeError(conn, fmt.Sprintf("index_lookup_failed reason=%q", err.Error()))
 		return
@@ -533,36 +569,53 @@ func (h *Handler) HandleReadStream(cmd string, conn net.Conn) {
 		return
 	}
 
-	// Collect messages from the partition for each index entry.
-	var msgs []types.Message
-	for _, entry := range entries {
-		batch, err := p.ReadCommitted(entry.Offset, 1)
-		if err != nil {
-			writeError(conn, fmt.Sprintf("partition_read_failed offset=%d reason=%q", entry.Offset, err.Error()))
-			return
-		}
-		if len(batch) > 0 && batch[0].Key == key {
-			msgs = append(msgs, batch[0])
-		}
+	if useSnapshot && snap.Version > streamVersion {
+		writeError(conn, "snapshot_ahead_of_stream")
+		return
+	}
+	msgs, byteLimited, err := readIndexedStreamPage(p, entries, key, topicName, partitionID, wire.MaxFramePayload)
+	if err != nil {
+		writeError(conn, err.Error())
+		return
+	}
+	hasMore = hasMore || byteLimited
+	if hasMore && !paged {
+		writeError(conn, "stream_page_required reason=\"retry READ_STREAM with limit and from_version\"")
+		return
 	}
 
 	// Build JSON envelope.
 	envelope := struct {
-		Status    string        `json:"status"`
-		Topic     string        `json:"topic"`
-		Key       string        `json:"key"`
-		Partition int           `json:"partition"`
-		Count     int           `json:"count"`
-		Snapshot  *SnapshotData `json:"snapshot,omitempty"`
+		Status         string        `json:"status"`
+		Topic          string        `json:"topic"`
+		Key            string        `json:"key"`
+		Partition      int           `json:"partition"`
+		Count          int           `json:"count"`
+		Snapshot       *SnapshotData `json:"snapshot,omitempty"`
+		StreamVersion  uint64        `json:"stream_version"`
+		NextVersion    uint64        `json:"next_version"`
+		HasMore        bool          `json:"has_more"`
+		LifecycleEpoch uint64        `json:"lifecycle_epoch"`
 	}{
-		Status:    "OK",
-		Topic:     topicName,
-		Key:       key,
-		Partition: partitionID,
-		Count:     len(msgs),
+		Status:         "OK",
+		Topic:          topicName,
+		Key:            key,
+		Partition:      partitionID,
+		Count:          len(msgs),
+		StreamVersion:  streamVersion,
+		HasMore:        hasMore,
+		LifecycleEpoch: lifecycleEpoch,
 	}
-	if snap != nil && snap.Version >= fromVersion {
+	if hasMore {
+		envelope.NextVersion = msgs[len(msgs)-1].AggregateVersion + 1
+	}
+	if useSnapshot {
 		envelope.Snapshot = snap
+	}
+	batchData, err := util.EncodeBatchMessages(topicName, partitionID, "1", false, msgs)
+	if err != nil {
+		writeError(conn, fmt.Sprintf("encode_stream_failed reason=%q", err.Error()))
+		return
 	}
 
 	envJSON, err := json.Marshal(envelope)
@@ -570,20 +623,32 @@ func (h *Handler) HandleReadStream(cmd string, conn net.Conn) {
 		writeError(conn, fmt.Sprintf("marshal envelope: %v", err))
 		return
 	}
+	if len(envJSON) > wire.MaxFramePayload {
+		writeError(conn, "stream_snapshot_too_large")
+		return
+	}
 
 	// Frame 1: JSON envelope.
 	if err := util.WriteWithLength(conn, envJSON); err != nil {
+		_ = conn.Close()
 		return
 	}
 
 	// Frame 2: binary batch.
-	batchData, err := util.EncodeBatchMessages(topicName, partitionID, "1", false, msgs)
-	if err != nil {
-		// Envelope already sent; best effort write of empty batch.
-		_ = util.WriteWithLength(conn, []byte{})
-		return
+	if err := util.WriteWithLength(conn, batchData); err != nil {
+		_ = conn.Close()
 	}
-	_ = util.WriteWithLength(conn, batchData)
+}
+
+func parseOptionalStreamUint(args map[string]string, key string) (uint64, error) {
+	if args[key] == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseUint(args[key], 10, 64)
+	if err != nil || value == 0 {
+		return 0, fmt.Errorf("invalid_%s", key)
+	}
+	return value, nil
 }
 
 // HandleSaveSnapshot processes:
