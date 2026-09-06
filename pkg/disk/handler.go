@@ -613,7 +613,7 @@ func (dh *DiskHandler) readMessagesFromPosition(reader *mmap.ReaderAt, position 
 
 		diskMsg, err := util.DeserializeDiskMessage(dataBuf)
 		if err != nil {
-			return nil, fmt.Errorf("decode message at byte %d: %w", pos, err)
+			return nil, dh.markWriteUnavailable(fmt.Errorf("decode message at byte %d: %w", pos, err))
 		}
 		if !havePreviousOffset && pos == 0 && !allowOffsetGaps && diskMsg.Offset != segmentBase {
 			return nil, fmt.Errorf("unexpected first offset at byte %d: got %d for segment base %d", pos, diskMsg.Offset, segmentBase)

@@ -23,10 +23,11 @@ uint32_be serializedLength
 byte[serializedLength] serializedDiskMessage
 ```
 
-The maximum accepted serialized record size is 16 MiB. The serialized message uses big-endian fixed-width integers and length-prefixed strings/bytes in this order:
+The maximum accepted serialized record size is 64 MiB, including its checksum. New records use `CDM3`; the reader also accepts complete `CDM2` records without checksums for an in-place upgrade. The serialized message uses big-endian fixed-width integers and length-prefixed strings/bytes in this order:
 
 | Field | Encoding |
 |---|---|
+| magic | four bytes `CDM3` |
 | topic | `uint16` length + UTF-8 bytes |
 | partition | `uint32` |
 | logical offset | `uint64` |
@@ -44,6 +45,7 @@ The maximum accepted serialized record size is 16 MiB. The serialized message us
 | control batch version | `int16` |
 | control coordinator epoch | `int64` |
 | control key/value | two `uint16` length-prefixed byte arrays |
+| checksum | `uint32` CRC32C (Castagnoli) of magic and all preceding record fields |
 
 The transaction/control fields are empty for ordinary records. Control records remain in the raw log and are filtered by `read_committed`.
 
@@ -73,7 +75,9 @@ A write being visible in the process page cache is different from surviving powe
 
 ## Recovery
 
-Startup recovery scans the active segment, validates every length and decoded record, checks contiguous offsets, and truncates an invalid or partial tail. It rebuilds or opens the sparse index and clamps recovered committed high watermarks to the durable tail.
+Startup recovery scans the entire active segment, including records before the last sparse index entry, validates lengths/checksums and contiguous offsets, and removes only a trailing partial record. Complete malformed or checksum-invalid records fail startup without truncation. Closed segments are checksum-validated when read; this is not a full startup scrub of every closed segment. A detected decode failure fences further writes and makes disk readiness fail until restart and repair from a verified backup/replica. It rebuilds or opens the sparse index and clamps recovered committed high watermarks to the durable tail.
+
+Take a consistent backup before upgrade. Existing `CDM2` records remain readable but gain no checksum until rewritten by normal compaction; do not claim retrospective corruption detection. Once `CDM3` records are written, downgrading the binary against that data directory is unsupported. The checksum detects accidental record corruption, not malicious tampering. The outer length prefix and torn-tail recovery are not protected by this checksum; an incomplete tail is still handled by the existing recovery policy.
 
 Partition-owned side checkpoints include:
 

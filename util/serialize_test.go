@@ -123,7 +123,7 @@ func TestDeserializeDiskMessage_TruncatedEventSourcingFields(t *testing.T) {
 	truncated := data[:len(data)-10]
 	_, err = DeserializeDiskMessage(truncated)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "incomplete")
+	assert.ErrorIs(t, err, ErrDiskRecordChecksum)
 }
 
 func TestDeserializeDiskMessageRejectsIncompleteStorageV2Record(t *testing.T) {
@@ -142,7 +142,7 @@ func TestDeserializeDiskMessageRejectsIncompleteStorageV2Record(t *testing.T) {
 
 	_, err = DeserializeDiskMessage(data[:len(data)-40])
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "incomplete")
+	assert.ErrorIs(t, err, ErrDiskRecordChecksum)
 }
 
 func TestDeserializeDiskMessageRejectsLegacyUnversionedRecord(t *testing.T) {
