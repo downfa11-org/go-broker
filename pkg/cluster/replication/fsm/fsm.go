@@ -129,6 +129,13 @@ func (f *BrokerFSM) HasPendingPartitionRecovery() bool {
 	return f.partitionRecoveryPending
 }
 
+// BeginPartitionRecovery must run before Raft starts restoring or replaying.
+func (f *BrokerFSM) BeginPartitionRecovery() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.partitionRecoveryPending = true
+}
+
 // GetTopicDefinition returns a detached copy of the authoritative replicated
 // topic definition, including when node-local materialization is pending.
 func (f *BrokerFSM) GetTopicDefinition(name string) (topic.Definition, bool) {
@@ -159,6 +166,12 @@ func (f *BrokerFSM) SetTransactionManager(txn *transaction.Manager) {
 		util.Info("FSM: Imported %d deferred restored transactions", len(f.restoredTransactionState))
 		f.restoredTransactionState = nil
 	}
+}
+
+func (f *BrokerFSM) TransactionManager() *transaction.Manager {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.txn
 }
 
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
@@ -442,13 +455,13 @@ func (f *BrokerFSM) reconcileCommittedPartitions() error {
 		}
 	}
 	f.mu.Lock()
-	f.partitionRecoveryPending = pending
+	f.partitionRecoveryPending = f.partitionRecoveryPending || pending
 	f.mu.Unlock()
 	return nil
 }
 
 // FinalizeRecoveredPartitions performs destructive reconciliation only after
-// the replication manager has observed every committed post-snapshot command
+// the replication manager has observed every committed recovery command
 // applied to this FSM.
 func (f *BrokerFSM) FinalizeRecoveredPartitions() error {
 	f.transitionMu.Lock()

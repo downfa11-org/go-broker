@@ -19,6 +19,7 @@ import (
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/coordinator"
 	"github.com/cursus-io/cursus/pkg/topic"
+	"github.com/cursus-io/cursus/pkg/transaction"
 	"github.com/cursus-io/cursus/pkg/types"
 	"github.com/cursus-io/cursus/util"
 	"github.com/hashicorp/raft"
@@ -120,8 +121,14 @@ type RaftReplicationManager struct {
 	leaderCh chan bool
 }
 
-func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID string, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator, client client.TCPClusterClient) (*RaftReplicationManager, error) {
+func newReplayFSM(cfg *config.Config, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator) *fsm.BrokerFSM {
 	brokerFSM := fsm.NewBrokerFSM(topicManager, coordinator)
+	brokerFSM.SetTransactionManager(transaction.NewManagerWithExpiration(time.Duration(cfg.TransactionalIDExpirationMS) * time.Millisecond))
+	return brokerFSM
+}
+
+func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID string, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator, client client.TCPClusterClient) (*RaftReplicationManager, error) {
+	brokerFSM := newReplayFSM(cfg, topicManager, coordinator)
 
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
 	raftCfg, err := buildRaftConfig(cfg, brokerID)
@@ -172,6 +179,15 @@ func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID
 		return nil, fmt.Errorf("failed to create transport: %w", err)
 	}
 
+	boundary, err := persistedReplayBoundary(raftStore, snapshots)
+	if err != nil {
+		_ = raftStore.Close()
+		_ = transport.Close()
+		return nil, fmt.Errorf("inspect persisted Raft recovery boundary: %w", err)
+	}
+	if boundary.index != 0 {
+		brokerFSM.BeginPartitionRecovery()
+	}
 	r, err := raft.NewRaft(raftCfg, brokerFSM, raftStore, raftStore, snapshots, transport)
 	if err != nil {
 		_ = raftStore.Close()
@@ -231,7 +247,7 @@ func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID
 			util.Error("❌ Failed to get Raft configuration for node %s: %v", brokerID, confFuture.Error())
 		}
 	}
-	if err := awaitRecoveredPartitionReplay(ctx, r, raftStore, brokerFSM, brokerID, recoveredPartitionReplayNoProgressTimeout); err != nil {
+	if err := awaitRecoveredPartitionReplay(ctx, r, raftStore, brokerFSM, brokerID, recoveredPartitionReplayNoProgressTimeout, boundary); err != nil {
 		_ = r.Shutdown().Error()
 		_ = raftStore.Close()
 		_ = transport.Close()
@@ -257,7 +273,7 @@ func NewRaftReplicationManager(ctx context.Context, cfg *config.Config, brokerID
 	return rm, nil
 }
 
-func awaitRecoveredPartitionReplay(ctx context.Context, r raftStatsReader, logStore raft.LogStore, brokerFSM recoveredPartitionState, brokerID string, noProgressTimeout time.Duration) error {
+func awaitRecoveredPartitionReplay(ctx context.Context, r raftStatsReader, logStore raft.LogStore, brokerFSM recoveredPartitionState, brokerID string, noProgressTimeout time.Duration, boundary replayBoundary) error {
 	if brokerFSM == nil || !brokerFSM.HasPendingPartitionRecovery() {
 		return nil
 	}
@@ -311,7 +327,11 @@ func awaitRecoveredPartitionReplay(ctx context.Context, r raftStatsReader, logSt
 				}
 			}
 			latestProgress.targetIndex = targetIndex
-			if targetKnown && latestProgress.appliedIndex >= targetIndex {
+			boundaryCommitted, boundaryErr := boundary.committed(logStore, stats, commitIndex, snapshotIndex)
+			if boundaryErr != nil && !errors.Is(boundaryErr, raft.ErrLogNotFound) {
+				return fmt.Errorf("inspect Raft recovery boundary: %w", boundaryErr)
+			}
+			if boundaryErr == nil && boundaryCommitted && targetKnown && latestProgress.appliedIndex >= targetIndex {
 				latestCommit, parseErr := strconv.ParseUint(r.Stats()["commit_index"], 10, 64)
 				if parseErr == nil && latestCommit == commitIndex {
 					if err := brokerFSM.FinalizeRecoveredPartitions(); err != nil {

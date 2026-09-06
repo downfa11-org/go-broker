@@ -112,16 +112,20 @@ func NewCommandHandler(
 		ESHandler:     eventsource.NewHandler(tm),
 		TxnManager:    transaction.NewManagerWithExpiration(transactionalIDExpiration(cfg)),
 	}
+	if cc != nil && cc.RaftManager != nil {
+		if fsm := cc.RaftManager.GetFSM(); fsm != nil {
+			if recovered := fsm.TransactionManager(); recovered != nil {
+				ch.TxnManager = recovered
+			} else {
+				fsm.SetTransactionManager(ch.TxnManager)
+			}
+		}
+	}
 	if tm != nil {
 		tm.SetTransactionDecisionResolver(ch.TxnManager)
 		tm.SetDeleteHook(ch.ESHandler.DeleteTopic)
 		if cfg != nil && cfg.EnabledDistribution {
 			tm.SetDistributedCompactionGate(ch.distributedCompactionAllowed)
-		}
-	}
-	if cc != nil && cc.RaftManager != nil {
-		if fsm := cc.RaftManager.GetFSM(); fsm != nil {
-			fsm.SetTransactionManager(ch.TxnManager)
 		}
 	}
 	if cc != nil {
