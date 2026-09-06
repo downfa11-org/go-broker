@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cursus-io/cursus/pkg/types"
+	"github.com/cursus-io/cursus/pkg/wire"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -118,7 +119,19 @@ func (sc *StreamConnection) Run(readFn func(offset uint64, max int) ([]types.Mes
 		}
 
 		currentOffset := sc.Offset()
-		msgs, err := readFn(currentOffset, bs)
+		budget, err := util.NewBatchReadBudget(sc.topic, sc.partition, wire.MaxFramePayload)
+		if err != nil {
+			sc.setStopReason(StreamControlReasonError)
+			return false, false
+		}
+		msgs, err := budget.Read(currentOffset, bs, func(offset uint64, max int) ([]types.Message, error) {
+			select {
+			case <-sc.stopCh:
+				return nil, fmt.Errorf("stream stopped")
+			default:
+				return readFn(offset, max)
+			}
+		})
 		if err != nil {
 			util.Error("Stream read error for %s/%d: %v", sc.topic, sc.partition, err)
 			var offsetErr *types.OffsetOutOfRangeError
@@ -148,7 +161,7 @@ func (sc *StreamConnection) Run(readFn func(offset uint64, max int) ([]types.Mes
 			return false, false
 		}
 
-		if err := util.WriteWithLength(conn, batchData); err != nil {
+		if err := sc.writeBatch(conn, batchData); err != nil {
 			util.Debug("Batch write error in stream: %v", err)
 			sc.setStopReason(StreamControlReasonError)
 			return false, false
@@ -319,7 +332,29 @@ func (sc *StreamConnection) StopWithReason(reason string) {
 	sc.setStopReason(reason)
 	sc.stopOnce.Do(func() {
 		close(sc.stopCh)
+		sc.mu.RLock()
+		conn := sc.conn
+		sc.mu.RUnlock()
+		if conn != nil {
+			_ = conn.SetWriteDeadline(time.Now())
+		}
 	})
+}
+
+func (sc *StreamConnection) writeBatch(conn net.Conn, data []byte) error {
+	sc.mu.Lock()
+	select {
+	case <-sc.stopCh:
+		sc.mu.Unlock()
+		return fmt.Errorf("stream stopped")
+	default:
+	}
+	err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	sc.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return util.WriteWithLength(conn, data)
 }
 
 func (sc *StreamConnection) setStopReason(reason string) {

@@ -406,6 +406,8 @@ Response (JSON):
 #### Consuming
 
 **CONSUME** (single poll)
+
+`batch` must be 1–1024 and `wait_ms` must be 0–30000; invalid or overflowing values are rejected. A response may contain fewer records when the encoded 64 MiB frame budget is reached. Fetch again from the last returned offset plus one. Long polls stop when the request or broker is canceled. Failed response writes close the connection without retaining its speculative read cursor.
 ```
 CONSUME topic=<name> partition=<N> offset=<N> member=<id> group=<name> [autoOffsetReset=<earliest|latest>] [isolation=<read_committed|read_uncommitted>] [batch=<N>] [wait_ms=<N>]
 ```
@@ -436,6 +438,8 @@ generation on the data path. Ownership and generation fencing are enforced by
 coordinator commands such as `HEARTBEAT`, `COMMIT_OFFSET`, and `BATCH_COMMIT`.
 
 **STREAM** (continuous push)
+
+`batch` has the same 1–1024 limit and encoded byte budget as `CONSUME`. Stream data writes have a 10-second deadline; stopping a stream interrupts a blocked write. Broker shutdown rejects new streams and waits for active stream workers and their scheduler to exit. Ordinary command responses have a one-minute write deadline.
 ```
 STREAM topic=<name> partition=<N> member=<id> group=<name> [isolation=<read_committed|read_uncommitted>] [batch=<N>]
 ```

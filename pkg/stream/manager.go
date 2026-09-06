@@ -16,6 +16,8 @@ type StreamManager struct {
 	timeout    time.Duration
 	scheduling bool
 	scheduleCh chan struct{}
+	closed     bool
+	wg         sync.WaitGroup
 }
 
 func NewStreamManager(maxConn int, timeout time.Duration) *StreamManager {
@@ -31,6 +33,10 @@ func (sm *StreamManager) AddStream(key string, stream *StreamConnection,
 	readFn func(offset uint64, max int) ([]types.Message, error),
 ) error {
 	sm.mu.Lock()
+	if sm.closed {
+		sm.mu.Unlock()
+		return fmt.Errorf("stream manager closed")
+	}
 	previous, exists := sm.streams[key]
 	if !exists && len(sm.streams) >= sm.maxConn {
 		sm.mu.Unlock()
@@ -40,13 +46,16 @@ func (sm *StreamManager) AddStream(key string, stream *StreamConnection,
 	startScheduler := !sm.scheduling
 	if startScheduler {
 		sm.scheduling = true
+		sm.wg.Add(1)
 	}
+	sm.wg.Add(1)
 	sm.mu.Unlock()
 
 	if previous != nil && previous != stream {
 		previous.StopWithReason(StreamControlReasonReplaced)
 	}
 	go func() {
+		defer sm.wg.Done()
 		stream.Run(readFn)
 		sm.removeStreamIfCurrent(key, stream)
 	}()
@@ -84,6 +93,7 @@ func (sm *StreamManager) removeStreamIfCurrent(key string, stream *StreamConnect
 }
 
 func (sm *StreamManager) runScheduler() {
+	defer sm.wg.Done()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	type scheduledStream struct {
@@ -164,6 +174,18 @@ func (sm *StreamManager) wakeScheduler() {
 	case sm.scheduleCh <- struct{}{}:
 	default:
 	}
+}
+
+func (sm *StreamManager) Close() {
+	sm.mu.Lock()
+	sm.closed = true
+	for _, connection := range sm.streams {
+		connection.Stop()
+	}
+	clear(sm.streams)
+	sm.mu.Unlock()
+	sm.wakeScheduler()
+	sm.wg.Wait()
 }
 
 func (sc *StreamConnection) Conn() net.Conn {
